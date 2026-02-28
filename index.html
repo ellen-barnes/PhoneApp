@@ -12,33 +12,214 @@
   <div class="container">
     <header class="header">
       <h1>Account Balance Tracker</h1>
-      <p class="subtitle">Track balances across all of your accounts</p>
     </header>
 
-    <div class="card">
-      <h2>Total Across All Accounts</h2>
-      <p id="totalBalance" class="big">GBP 0.00</p>
+    <div class="tabs">
+      <button id="tabDashboardBtn" class="tab-btn active" onclick="showTab('dashboard')">Accounts</button>
+      <button id="tabTransactionsBtn" class="tab-btn" onclick="showTab('transactions')">Transactions</button>
+      <button id="tabGraphBtn" class="tab-btn" onclick="showTab('graph')">Graph</button>
+      <button id="tabCategoriesBtn" class="tab-btn" onclick="showTab('categories')">Categories</button>
     </div>
 
-    <div class="card">
-      <h2>Add Account</h2>
-      <div class="stack">
-        <input id="accountNameInput" class="input" placeholder="Account name (e.g. Current Account)" />
-        <input id="initialBalanceInput" class="input" type="number" step="0.01" placeholder="Initial balance (e.g. 1200.50)" />
-        <button class="btn" onclick="addAccount()">Add Account</button>
+    <section id="dashboardTab" class="tab-panel">
+      <div class="card">
+        <h2>Total Across All Accounts</h2>
+        <p id="totalBalance" class="big">GBP 0.00</p>
       </div>
-    </div>
 
-    <div class="card">
-      <h2>Your Accounts</h2>
-      <div id="accountsList" class="stack"></div>
-    </div>
+      <div class="card">
+        <div class="section-title-row section-title-row-three accounts-header-row">
+          <h2>Your Accounts</h2>
+          <span class="section-title-spacer section-title-center-btn" aria-hidden="true"></span>
+          <button class="btn btn-small section-title-right-btn" type="button" onclick="openAddAccountModal()">Add Account</button>
+        </div>
+        <div id="accountsList" class="stack"></div>
+        <button id="archivedAccountsToggleBtn" class="archive-toggle-btn" type="button" onclick="toggleArchivedAccountsVisibility()">
+          Archived Accounts
+        </button>
+        <div id="archivedAccountsList" class="stack"></div>
+      </div>
+
+      <div id="addAccountModal" class="modal hidden" onclick="onAddAccountModalBackdropClick(event)">
+        <div class="modal-card" onclick="event.stopPropagation()">
+          <div class="modal-top">
+            <h3 class="modal-title">Add Account</h3>
+            <button class="btn btn-secondary btn-small" type="button" onclick="closeAddAccountModal()">Close</button>
+          </div>
+          <div class="stack">
+            <input id="accountNameInput" class="input" placeholder="Account name (e.g. Current Account)" />
+            <input id="initialBalanceInput" class="input" type="number" step="0.01" placeholder="Initial balance (e.g. 1200.50)" />
+            <button class="btn" type="button" onclick="addAccount()">Add Account</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="transactionsTab" class="tab-panel hidden">
+      <div class="card">
+        <div class="section-title-row transactions-header-row">
+          <h2>Transaction History</h2>
+          <div class="transaction-header-actions">
+            <button class="btn btn-danger btn-small" onclick="clearAllTransactions()">Clear All Transactions</button>
+            <button id="openAddTransactionBtn" class="btn btn-small" type="button" onclick="openAddTransactionModal()">Add Transaction</button>
+          </div>
+        </div>
+        <div id="transactionsList" class="stack"></div>
+        <div class="row">
+          <button id="transactionHistoryRangeBtn" class="btn btn-secondary btn-small" type="button" onclick="toggleTransactionHistoryRange()">Show All</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Import Transactions</h2>
+        <p class="saved">Upload Excel (.xlsx/.xls) or CSV with columns: type, amount, account fr, account to, category, remark, currency, date.</p>
+        <div class="stack">
+          <input id="importFileInput" class="input" type="file" accept=".xlsx,.xls,.csv" />
+          <button class="btn" onclick="importTransactionsFile()">Import File</button>
+          <p id="importResult" class="saved"></p>
+        </div>
+      </div>
+
+      <div id="transactionModal" class="modal hidden" onclick="onTransactionModalBackdropClick(event)">
+        <div class="modal-card" onclick="event.stopPropagation()">
+          <div class="modal-top">
+            <h3 class="modal-title">Transaction Details</h3>
+            <button class="btn btn-secondary btn-small" type="button" onclick="closeTransactionModal()">Close</button>
+          </div>
+          <div id="transactionModalBody" class="stack"></div>
+          <div class="row">
+            <button id="transactionModalDeleteBtn" class="btn btn-danger btn-small" type="button" onclick="deleteTransactionFromModal()">Delete Transaction</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="addTransactionModal" class="modal hidden" onclick="onAddTransactionModalBackdropClick(event)">
+        <div class="modal-card" onclick="event.stopPropagation()">
+          <div class="modal-top">
+            <h3 class="modal-title">Add Transaction</h3>
+            <button class="btn btn-secondary btn-small" type="button" onclick="closeAddTransactionModal()">Close</button>
+          </div>
+          <div class="stack">
+            <label class="label" for="transactionTypeInput">Type</label>
+            <select id="transactionTypeInput" class="input" onchange="onTransactionTypeChange()">
+              <option value="expense">Expense</option>
+              <option value="income">Income</option>
+              <option value="transfer">Transfer</option>
+            </select>
+
+            <label class="label" for="transactionDateInput">Date</label>
+            <input id="transactionDateInput" class="input" type="date" />
+
+            <label class="label" for="transactionAmountInput">Amount</label>
+            <input id="transactionAmountInput" class="input" type="number" step="0.01" placeholder="Amount" />
+
+            <div id="transactionAccountGroup" class="stack">
+              <label id="transactionAccountLabel" class="label" for="transactionAccountInput">Account</label>
+              <select id="transactionAccountInput" class="input"></select>
+            </div>
+
+            <div id="transactionTransferGroup" class="stack hidden">
+              <label class="label" for="transactionFromAccountInput">From account</label>
+              <select id="transactionFromAccountInput" class="input"></select>
+              <label class="label" for="transactionToAccountInput">To account</label>
+              <select id="transactionToAccountInput" class="input"></select>
+            </div>
+
+            <div id="transactionCategoryGroup" class="stack">
+              <label class="label" for="transactionCategoryTrigger">Category</label>
+              <div class="category-dropdown" id="transactionCategoryDropdown">
+                <button id="transactionCategoryTrigger" class="input category-trigger" type="button" onclick="toggleCategoryDropdown()">
+                  <span id="transactionCategoryLabel">Select category (optional)</span>
+                  <span class="category-caret">v</span>
+                </button>
+                <div id="transactionCategoryMenu" class="category-menu hidden"></div>
+              </div>
+            </div>
+
+            <label class="label" for="transactionNoteInput">Note</label>
+            <input id="transactionNoteInput" class="input" placeholder="Optional note" />
+
+            <button id="addTransactionBtn" class="btn" type="button" onclick="addTransaction()">Add Transaction</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="graphTab" class="tab-panel hidden">
+      <div class="card">
+        <h2>Balance Over Time</h2>
+        <div class="row filter-row">
+          <label for="graphAccountFilter" class="label">Show:</label>
+          <select id="graphAccountFilter" class="input select-input" onchange="onGraphFilterChange()"></select>
+        </div>
+        <div class="row filter-row">
+          <label class="label checkbox-inline" for="graphAllHistoryCheckbox">
+            <input id="graphAllHistoryCheckbox" type="checkbox" onchange="onGraphAllHistoryChange()" checked />
+            All history
+          </label>
+        </div>
+        <div class="row filter-row">
+          <label class="label checkbox-inline" for="graphTrendLineCheckbox">
+            <input id="graphTrendLineCheckbox" type="checkbox" onchange="onGraphTrendLineChange()" checked />
+            Trend line
+          </label>
+        </div>
+        <div id="graphDateRangeGroup" class="row filter-row">
+          <label for="graphDateStart" class="label">From:</label>
+          <input id="graphDateStart" class="input select-input" type="date" onchange="onGraphDateRangeChange()" />
+          <label for="graphDateEnd" class="label">To:</label>
+          <input id="graphDateEnd" class="input select-input" type="date" onchange="onGraphDateRangeChange()" />
+        </div>
+        <canvas id="balanceChart" class="chart" height="280"></canvas>
+        <div class="row filter-row">
+          <div class="row zoom-controls">
+            <button class="btn btn-secondary btn-small" type="button" onclick="onGraphZoomOutClick()">-</button>
+            <button class="btn btn-small" type="button" onclick="onGraphZoomInClick()">+</button>
+          </div>
+        </div>
+        <div id="graphScrollRow" class="row filter-row hidden">
+          <input id="graphRangeScroll" class="graph-range-scroll" type="range" min="0" max="1000" step="1" value="0" oninput="onGraphRangeScrollChange()" />
+        </div>
+        <p id="graphSummary" class="saved"></p>
+      </div>
+
+      <div id="graphPointModal" class="modal hidden" onclick="onGraphPointModalBackdropClick(event)">
+        <div class="modal-card" onclick="event.stopPropagation()">
+          <div class="modal-top">
+            <h3 class="modal-title">Graph Point Details</h3>
+            <button class="btn btn-secondary btn-small" type="button" onclick="closeGraphPointModal()">Close</button>
+          </div>
+          <div id="graphPointModalBody" class="stack"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="categoriesTab" class="tab-panel hidden">
+      <div class="card">
+        <h2>Category Breakdown</h2>
+        <div class="row filter-row">
+          <label for="categoryBreakdownTypeInput" class="label">Type:</label>
+          <select id="categoryBreakdownTypeInput" class="input select-input" onchange="onCategoryBreakdownTypeChange()">
+            <option value="expense">Expense</option>
+            <option value="income">Income</option>
+          </select>
+        </div>
+        <div class="row filter-row">
+          <label for="categoryBreakdownMonthInput" class="label">Month:</label>
+          <select id="categoryBreakdownMonthInput" class="input select-input" onchange="onCategoryBreakdownMonthChange()"></select>
+        </div>
+        <canvas id="categoryBreakdownChart" class="chart" height="280"></canvas>
+        <p id="categoryBreakdownSummary" class="saved"></p>
+        <div id="categoryBreakdownLegend" class="category-breakdown-legend"></div>
+      </div>
+    </section>
 
     <footer class="footer">
       <p id="installHint"></p>
     </footer>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
