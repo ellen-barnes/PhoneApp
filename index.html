@@ -2,43 +2,36 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-
-  <!-- Makes layout behave properly on phones -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-
-  <title>My First Phone App</title>
-
-  <!-- Connect your styling -->
+  <title>Account Balance Tracker</title>
   <link rel="stylesheet" href="style.css" />
-
-  <!-- PWA: Connect the app identity file -->
   <link rel="manifest" href="manifest.json" />
-
-  <!-- PWA: Android uses this for the status bar / UI tint -->
   <meta name="theme-color" content="#000000" />
 </head>
-
 <body>
   <div class="container">
     <header class="header">
-      <h1>My First Phone App 🎉</h1>
-      <p class="subtitle">Installable on Android as a real app (PWA)</p>
+      <h1>Account Balance Tracker</h1>
+      <p class="subtitle">Track balances across all of your accounts</p>
     </header>
 
     <div class="card">
-      <h2>Counter</h2>
-      <p id="count" class="big">0</p>
-      <div class="row">
-        <button class="btn" onclick="decrease()">-</button>
-        <button class="btn" onclick="increase()">+</button>
+      <h2>Total Across All Accounts</h2>
+      <p id="totalBalance" class="big">GBP 0.00</p>
+    </div>
+
+    <div class="card">
+      <h2>Add Account</h2>
+      <div class="stack">
+        <input id="accountNameInput" class="input" placeholder="Account name (e.g. Current Account)" />
+        <input id="initialBalanceInput" class="input" type="number" step="0.01" placeholder="Initial balance (e.g. 1200.50)" />
+        <button class="btn" onclick="addAccount()">Add Account</button>
       </div>
     </div>
 
     <div class="card">
-      <h2>Your Name</h2>
-      <input id="nameInput" class="input" placeholder="Type your name..." />
-      <button class="btn" onclick="saveName()">Save</button>
-      <p id="savedName" class="saved"></p>
+      <h2>Your Accounts</h2>
+      <div id="accountsList" class="stack"></div>
     </div>
 
     <footer class="footer">
@@ -46,7 +39,6 @@
     </footer>
   </div>
 
-  <!-- Connect your app logic -->
   <script src="app.js"></script>
 </body>
 </html>

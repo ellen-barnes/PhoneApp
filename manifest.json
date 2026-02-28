@@ -1,6 +1,6 @@
 {
-  "name": "My First Phone App",
-  "short_name": "MyApp",
+  "name": "Account Balance Tracker",
+  "short_name": "Accounts",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#f2f2f2",
