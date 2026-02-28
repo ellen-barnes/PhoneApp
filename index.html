@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+
+  <!-- Makes layout behave properly on phones -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>My First Phone App</title>
+
+  <!-- Connect your styling -->
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- PWA: Connect the app identity file -->
+  <link rel="manifest" href="manifest.json" />
+
+  <!-- PWA: Android uses this for the status bar / UI tint -->
+  <meta name="theme-color" content="#000000" />
+</head>
+
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>My First Phone App 🎉</h1>
+      <p class="subtitle">Installable on Android as a real app (PWA)</p>
+    </header>
+
+    <div class="card">
+      <h2>Counter</h2>
+      <p id="count" class="big">0</p>
+      <div class="row">
+        <button class="btn" onclick="decrease()">-</button>
+        <button class="btn" onclick="increase()">+</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Your Name</h2>
+      <input id="nameInput" class="input" placeholder="Type your name..." />
+      <button class="btn" onclick="saveName()">Save</button>
+      <p id="savedName" class="saved"></p>
+    </div>
+
+    <footer class="footer">
+      <p id="installHint"></p>
+    </footer>
+  </div>
+
+  <!-- Connect your app logic -->
+  <script src="app.js"></script>
+</body>
+</html>
