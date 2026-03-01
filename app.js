@@ -272,6 +272,15 @@ function normalizeImportedDate(rawDate) {
   if (!text) return getTodayDateInputValue();
   if (isValidDateInput(text)) return text;
 
+  const isoLikeMatch = text.match(/^(\d{4})[\/.\-](\d{1,2})[\/.\-](\d{1,2})$/);
+  if (isoLikeMatch) {
+    const year = Number.parseInt(isoLikeMatch[1], 10);
+    const month = Number.parseInt(isoLikeMatch[2], 10);
+    const day = Number.parseInt(isoLikeMatch[3], 10);
+    const normalized = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    if (isValidDateInput(normalized)) return normalized;
+  }
+
   const ukMatch = text.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/);
   if (ukMatch) {
     const day = Number.parseInt(ukMatch[1], 10);
@@ -2200,7 +2209,32 @@ async function readImportRows(file) {
 
   if (fileName.endsWith(".csv")) {
     const text = await file.text();
-    return parseCsv(text);
+    return { rows: parseCsv(text), rowNumberOffset: 2 };
+  }
+
+  if (fileName.endsWith(".json")) {
+    const text = (await file.text()).replace(/^\uFEFF/, "");
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("JSON file is invalid.");
+    }
+
+    if (Array.isArray(parsed)) {
+      return { rows: parsed, rowNumberOffset: 1 };
+    }
+
+    if (parsed && typeof parsed === "object") {
+      if (Array.isArray(parsed.transactions)) {
+        return { rows: parsed.transactions, rowNumberOffset: 1 };
+      }
+      if (Array.isArray(parsed.data)) {
+        return { rows: parsed.data, rowNumberOffset: 1 };
+      }
+    }
+
+    throw new Error("JSON must be an array of transactions (or an object with a transactions/data array).");
   }
 
   if (!window.XLSX) {
@@ -2215,11 +2249,14 @@ async function readImportRows(file) {
   });
 
   if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
-    return [];
+    return { rows: [], rowNumberOffset: 2 };
   }
 
   const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-  return window.XLSX.utils.sheet_to_json(firstSheet, { defval: "", raw: true });
+  return {
+    rows: window.XLSX.utils.sheet_to_json(firstSheet, { defval: "", raw: true }),
+    rowNumberOffset: 2
+  };
 }
 
 function getNormalizedRow(row) {
@@ -2237,6 +2274,33 @@ function getFirstValue(row, keys) {
     }
   }
   return "";
+}
+
+function parseImportedAmount(rawAmount) {
+  if (typeof rawAmount === "number") {
+    return Number.isFinite(rawAmount) ? normalizeMoney(Math.abs(rawAmount)) : 0;
+  }
+
+  const text = toTrimmedString(rawAmount);
+  if (!text) return 0;
+
+  const match = text.match(/[-+]?\d[\d,]*(?:\.\d+)?/);
+  if (!match) return 0;
+
+  const numeric = Number.parseFloat(match[0].replaceAll(",", ""));
+  return Number.isFinite(numeric) ? normalizeMoney(Math.abs(numeric)) : 0;
+}
+
+function parseTransferAccountsFromField(rawAccountField) {
+  const text = toTrimmedString(rawAccountField);
+  if (!text) return { from: "", to: "" };
+
+  const parts = text
+    .split(/\s*(?:\u279B|\u2192|\u27A1|\u27F6|\u2B95|->|=>)\s*/)
+    .map((part) => toTrimmedString(part))
+    .filter(Boolean);
+  if (parts.length < 2) return { from: "", to: "" };
+  return { from: parts[0], to: parts[parts.length - 1] };
 }
 
 function getOrCreateAccountIdByName(accountName, createdDate, counters) {
@@ -2264,20 +2328,21 @@ function getOrCreateAccountIdByName(accountName, createdDate, counters) {
   return newAccount.id;
 }
 
-function importTransactionsFromRows(rows) {
+function importTransactionsFromRows(rows, rowNumberOffset = 2) {
   const counters = { added: 0, skipped: 0, createdAccounts: 0, failedRows: [] };
 
   rows.forEach((rawRow, index) => {
     const row = getNormalizedRow(rawRow);
-    const rowNumber = index + 2;
-    const accountFrPreview = toTrimmedString(getFirstValue(row, ["accountfr", "accountfrom", "fromaccount"]));
-    const accountToPreview = toTrimmedString(getFirstValue(row, ["accountto", "toaccount"]));
+    const rowNumber = index + rowNumberOffset;
+    const accountSinglePreview = toTrimmedString(getFirstValue(row, ["account", "accountname"]));
+    let accountFr = toTrimmedString(getFirstValue(row, ["accountfr", "accountfrom", "fromaccount"]));
+    let accountTo = toTrimmedString(getFirstValue(row, ["accountto", "toaccount"]));
 
     const recordFailure = (reason) => {
       const typeValue = toTrimmedString(getFirstValue(row, ["type", "transactiontype"])) || "(blank)";
       const amountValue = toTrimmedString(getFirstValue(row, ["amount", "value"])) || "(blank)";
       counters.failedRows.push(
-        `Row ${rowNumber}: ${reason} | type=${typeValue}, amount=${amountValue}, account fr=${accountFrPreview || "(blank)"}, account to=${accountToPreview || "(blank)"}`
+        `Row ${rowNumber}: ${reason} | type=${typeValue}, amount=${amountValue}, account=${accountSinglePreview || "(blank)"}, account fr=${accountFr || "(blank)"}, account to=${accountTo || "(blank)"}`
       );
       counters.skipped += 1;
     };
@@ -2288,15 +2353,22 @@ function importTransactionsFromRows(rows) {
       return;
     }
 
-    const amount = getSafeAmount(getFirstValue(row, ["amount", "value"]));
+    if (type === "transfer" && (!accountFr || !accountTo) && accountSinglePreview) {
+      const parsedAccounts = parseTransferAccountsFromField(accountSinglePreview);
+      accountFr = accountFr || parsedAccounts.from;
+      accountTo = accountTo || parsedAccounts.to;
+    }
+
+    let amount = parseImportedAmount(getFirstValue(row, ["amount", "value"]));
+    if (type === "transfer" && amount <= 0) {
+      amount = parseImportedAmount(getFirstValue(row, ["currency", "curr"]));
+    }
     if (amount <= 0) {
       recordFailure("Amount must be greater than 0");
       return;
     }
 
     const date = normalizeImportedDate(getFirstValue(row, ["date", "transactiondate"]));
-    const accountFr = accountFrPreview;
-    const accountTo = accountToPreview;
     const importedCategory = normalizeCategoryName(getFirstValue(row, ["category", "cat"]));
     const remark = toTrimmedString(getFirstValue(row, ["remark", "note", "memo", "description"]));
     const currency = toTrimmedString(getFirstValue(row, ["currency", "curr"])).toUpperCase();
@@ -2333,7 +2405,7 @@ function importTransactionsFromRows(rows) {
       return;
     }
 
-    const singleAccountName = type === "expense" ? (accountFr || accountTo) : (accountTo || accountFr);
+    const singleAccountName = accountSinglePreview || (type === "expense" ? (accountFr || accountTo) : (accountTo || accountFr));
     const accountId = getOrCreateAccountIdByName(singleAccountName, date, counters);
     if (!accountId) {
       recordFailure("Missing account name for income/expense");
@@ -2390,13 +2462,15 @@ async function importTransactionsFile() {
   result.innerText = "Importing...";
 
   try {
-    const rows = await readImportRows(file);
+    const importPayload = await readImportRows(file);
+    const rows = Array.isArray(importPayload) ? importPayload : importPayload.rows;
+    const rowNumberOffset = Number.isInteger(importPayload?.rowNumberOffset) ? importPayload.rowNumberOffset : 2;
     if (!rows || rows.length === 0) {
       result.innerText = "No rows found in the file.";
       return;
     }
 
-    const counters = importTransactionsFromRows(rows);
+    const counters = importTransactionsFromRows(rows, rowNumberOffset);
     persistAll();
     render();
     fileInput.value = "";
@@ -2535,3 +2609,4 @@ document.addEventListener("click", (event) => {
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("./service-worker.js");
 }
+

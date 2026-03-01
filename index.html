@@ -72,9 +72,9 @@
 
       <div class="card">
         <h2>Import Transactions</h2>
-        <p class="saved">Upload Excel (.xlsx/.xls) or CSV with columns: type, amount, account fr, account to, category, remark, currency, date.</p>
+        <p class="saved">Upload Excel (.xlsx/.xls), CSV, or JSON. CSV/Excel columns: type, amount, account fr, account to, category, remark, currency, date. JSON also supports: type, amount, account, category, remark, currency, date.</p>
         <div class="stack">
-          <input id="importFileInput" class="input" type="file" accept=".xlsx,.xls,.csv" />
+          <input id="importFileInput" class="input" type="file" accept=".xlsx,.xls,.csv,.json" />
           <button class="btn" onclick="importTransactionsFile()">Import File</button>
           <p id="importResult" class="saved"></p>
         </div>

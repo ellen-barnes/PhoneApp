@@ -675,14 +675,27 @@ body {
     min-width: 0;
   }
 
+  .transactions-header-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .transaction-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
   .btn {
     flex: 1;
     min-width: 120px;
   }
 
   .transaction-header-actions .btn {
-    flex: 0 0 auto;
+    flex: 1 1 calc(50% - 4px);
     min-width: 0;
+    white-space: normal;
   }
 
   .select-input {
