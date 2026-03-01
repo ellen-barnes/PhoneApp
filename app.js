@@ -3496,8 +3496,57 @@ function mountSharedModalsToBody() {
   });
 }
 
+let promptedServiceWorkerScriptUrl = "";
+
+function promptForServiceWorkerUpdate(registration) {
+  if (!registration || !registration.waiting) return;
+
+  const waiting = registration.waiting;
+  const waitingKey = toTrimmedString(waiting.scriptURL || "waiting");
+  if (waitingKey && waitingKey === promptedServiceWorkerScriptUrl) return;
+  if (waitingKey) promptedServiceWorkerScriptUrl = waitingKey;
+
+  const shouldUpdate = window.confirm("A new version of Ledger is available. Update now?");
+  if (!shouldUpdate) return;
+
+  waiting.postMessage({ type: "SKIP_WAITING" });
+}
+
+function registerServiceWorkerWithUpdatePrompt() {
+  if (!("serviceWorker" in navigator)) return;
+
+  let reloadingForUpdate = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloadingForUpdate) return;
+    reloadingForUpdate = true;
+    window.location.reload();
+  });
+
+  navigator.serviceWorker.register("./service-worker.js")
+    .then((registration) => {
+      if (!registration) return;
+
+      promptForServiceWorkerUpdate(registration);
+
+      registration.addEventListener("updatefound", () => {
+        const installing = registration.installing;
+        if (!installing) return;
+
+        installing.addEventListener("statechange", () => {
+          if (installing.state === "installed" && navigator.serviceWorker.controller) {
+            promptForServiceWorkerUpdate(registration);
+          }
+        });
+      });
+
+      registration.update().catch(() => {});
+    })
+    .catch(() => {});
+}
+
 window.onload = function () {
   mountSharedModalsToBody();
+  registerServiceWorkerWithUpdatePrompt();
   loadAccounts();
   loadCategoryOptions();
   loadTransactions();
@@ -3537,9 +3586,5 @@ document.addEventListener("click", (event) => {
     closeCategoryDropdown();
   }
 });
-
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./service-worker.js");
-}
 
 
