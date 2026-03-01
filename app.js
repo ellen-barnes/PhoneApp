@@ -2,6 +2,7 @@ const ACCOUNTS_STORAGE_KEY = "accounts";
 const TRANSACTIONS_STORAGE_KEY = "transactions";
 const CATEGORY_STORAGE_KEY = "transaction-category-options";
 const EXPORT_META_STORAGE_KEY = "data-last-export-meta";
+const TOTAL_EXCLUDED_ACCOUNTS_STORAGE_KEY = "total-excluded-account-ids";
 const DEFAULT_CATEGORY_OPTIONS = {
   expense: [
     "Audits",
@@ -45,13 +46,16 @@ let categoryOptions = {
   income: [...DEFAULT_CATEGORY_OPTIONS.income]
 };
 let selectedCategoryByType = { expense: "", income: "" };
+let selectedTransactionEditCategoryByType = { expense: "", income: "" };
 let selectedGraphAccountId = "total";
 let selectedCategoryBreakdownType = "expense";
 let selectedCategoryBreakdownMonth = "";
 let activeTab = "dashboard";
 let transactionHistoryShowAll = false;
+let collapsedTransactionDatesByDate = {};
 let showArchivedAccounts = false;
 let expandedAccountId = "";
+let expandedArchivedAccountId = "";
 let activeTransactionModalId = "";
 let transactionModalEditMode = false;
 let transactionModalContext = null;
@@ -64,9 +68,14 @@ let showImportFormatDetails = false;
 let selectedImportFile = null;
 let lastExportMeta = null;
 let accountTransactionsShowAllById = {};
+let archivedAccountTransactionsShowMoreById = {};
 let selectedCategoryBreakdownMonthByType = { expense: "", income: "" };
 let selectedCategoryBreakdownCategory = "";
 let categoryBreakdownTransactionsShowAll = false;
+let categoryBreakdownSliceTargets = [];
+let categoryBreakdownHoverTooltipRef = null;
+let totalExcludedAccountIds = [];
+let showTotalFilterPanel = false;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CATEGORY_BREAKDOWN_COLORS = [
   "#1f77b4",
@@ -251,6 +260,51 @@ function saveLastExportMeta() {
   localStorage.setItem(EXPORT_META_STORAGE_KEY, JSON.stringify(lastExportMeta));
 }
 
+function loadTotalExcludedAccountIds() {
+  const saved = localStorage.getItem(TOTAL_EXCLUDED_ACCOUNTS_STORAGE_KEY);
+  if (!saved) {
+    totalExcludedAccountIds = [];
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(saved);
+    totalExcludedAccountIds = Array.isArray(parsed)
+      ? parsed.map((id) => toTrimmedString(id)).filter(Boolean)
+      : [];
+  } catch {
+    totalExcludedAccountIds = [];
+  }
+}
+
+function saveTotalExcludedAccountIds() {
+  localStorage.setItem(TOTAL_EXCLUDED_ACCOUNTS_STORAGE_KEY, JSON.stringify(totalExcludedAccountIds));
+}
+
+function sanitizeTotalExcludedAccountIds(rawIds) {
+  const existingAccountIds = new Set(accounts.map((account) => account.id));
+  const cleaned = [];
+  const seen = new Set();
+
+  (Array.isArray(rawIds) ? rawIds : []).forEach((id) => {
+    const cleanId = toTrimmedString(id);
+    if (!cleanId || seen.has(cleanId) || !existingAccountIds.has(cleanId)) return;
+    seen.add(cleanId);
+    cleaned.push(cleanId);
+  });
+
+  return cleaned;
+}
+
+function getTotalExcludedAccountSet() {
+  const cleaned = sanitizeTotalExcludedAccountIds(totalExcludedAccountIds);
+  if (JSON.stringify(cleaned) !== JSON.stringify(totalExcludedAccountIds)) {
+    totalExcludedAccountIds = cleaned;
+    saveTotalExcludedAccountIds();
+  }
+  return new Set(totalExcludedAccountIds);
+}
+
 function getCategoryListByType(type) {
   if (type !== "expense" && type !== "income") return [];
   if (!Array.isArray(categoryOptions[type])) {
@@ -426,6 +480,7 @@ function persistAll() {
   saveAccounts();
   saveTransactions();
   saveCategoryOptions();
+  saveTotalExcludedAccountIds();
 }
 
 function loadAccounts() {
@@ -679,16 +734,109 @@ function getGraphBalanceAtOrBeforeTimestamp(points, initialBalance, timestamp) {
   return balance;
 }
 
+function toggleTotalFilterPanel() {
+  showTotalFilterPanel = !showTotalFilterPanel;
+  renderTotal();
+}
+
+function resetTotalFilter() {
+  if (totalExcludedAccountIds.length === 0) return;
+  totalExcludedAccountIds = [];
+  saveTotalExcludedAccountIds();
+  renderTotal();
+}
+
+function onTotalFilterAccountIncludeToggle(accountId, includeInTotal) {
+  const cleanId = toTrimmedString(accountId);
+  if (!cleanId) return;
+
+  const nextExcluded = new Set(totalExcludedAccountIds);
+  if (includeInTotal) {
+    nextExcluded.delete(cleanId);
+  } else {
+    nextExcluded.add(cleanId);
+  }
+
+  totalExcludedAccountIds = Array.from(nextExcluded);
+  saveTotalExcludedAccountIds();
+  renderTotal();
+}
+
+function renderTotalFilter(activeAccounts, balances, excludedSet) {
+  const toggleButton = document.getElementById("totalFilterToggleBtn");
+  const resetButton = document.getElementById("totalFilterResetBtn");
+  const panel = document.getElementById("totalFilterPanel");
+  const summary = document.getElementById("totalFilterSummary");
+  if (!toggleButton || !resetButton || !panel || !summary) return;
+
+  const sortedActiveAccounts = [...activeAccounts].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+  );
+  const excludedActiveAccounts = sortedActiveAccounts.filter((account) => excludedSet.has(account.id));
+  const excludedCount = excludedActiveAccounts.length;
+
+  toggleButton.disabled = sortedActiveAccounts.length === 0;
+  toggleButton.innerText = excludedCount > 0
+    ? `Filter Accounts (${excludedCount} excluded)`
+    : "Filter Accounts";
+  resetButton.classList.toggle("hidden", excludedCount === 0);
+
+  if (sortedActiveAccounts.length === 0) {
+    showTotalFilterPanel = false;
+    panel.classList.add("hidden");
+    panel.innerHTML = "";
+    summary.classList.add("hidden");
+    summary.innerText = "";
+    return;
+  }
+
+  panel.classList.toggle("hidden", !showTotalFilterPanel);
+  panel.innerHTML = "";
+  sortedActiveAccounts.forEach((account) => {
+    const row = document.createElement("label");
+    row.className = "total-filter-option";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = !excludedSet.has(account.id);
+    checkbox.addEventListener("change", () => onTotalFilterAccountIncludeToggle(account.id, checkbox.checked));
+
+    const name = document.createElement("span");
+    name.className = "total-filter-option-name";
+    name.innerText = account.name;
+
+    const balance = document.createElement("span");
+    balance.className = "total-filter-option-balance";
+    balance.innerText = formatMoney(getSafeAmount(balances[account.id] || 0));
+
+    row.appendChild(checkbox);
+    row.appendChild(name);
+    row.appendChild(balance);
+    panel.appendChild(row);
+  });
+
+  if (excludedCount === 0) {
+    summary.classList.add("hidden");
+    summary.innerText = "";
+  } else {
+    summary.classList.remove("hidden");
+    summary.innerText = `Excluded from total: ${excludedActiveAccounts.map((account) => account.name).join(", ")}`;
+  }
+}
+
 function renderTotal() {
   const balances = getBalanceMap();
+  const excludedSet = getTotalExcludedAccountSet();
   const activeIds = new Set(getActiveAccounts().map((account) => account.id));
   const activeTotal = normalizeMoney(
     Object.entries(balances).reduce((sum, [accountId, amount]) => {
       if (!activeIds.has(accountId)) return sum;
+      if (excludedSet.has(accountId)) return sum;
       return sum + amount;
     }, 0)
   );
   document.getElementById("totalBalance").innerText = formatMoney(activeTotal);
+  renderTotalFilter(getActiveAccounts(), balances, excludedSet);
 }
 
 function renderAccounts() {
@@ -702,10 +850,19 @@ function renderAccounts() {
   const archivedAccounts = getArchivedAccounts();
   const balances = getBalanceMap();
   const activeAccountIds = new Set(activeAccounts.map((account) => account.id));
+  const archivedAccountIds = new Set(archivedAccounts.map((account) => account.id));
 
   if (!activeAccountIds.has(expandedAccountId)) {
     expandedAccountId = "";
   }
+  if (!archivedAccountIds.has(expandedArchivedAccountId)) {
+    expandedArchivedAccountId = "";
+  }
+  Object.keys(archivedAccountTransactionsShowMoreById).forEach((accountId) => {
+    if (!archivedAccountIds.has(accountId)) {
+      delete archivedAccountTransactionsShowMoreById[accountId];
+    }
+  });
 
   const sortedActiveAccounts = [...activeAccounts].sort((a, b) => {
     const balanceA = getSafeAmount(balances[a.id] || 0);
@@ -752,7 +909,7 @@ function renderAccounts() {
       ? `<button class="btn btn-danger btn-small" onclick="event.stopPropagation(); deleteAccount('${account.id}')">Delete</button>`
       : "";
     const card = document.createElement("div");
-    card.className = "account-item";
+    card.className = "account-item account-item-active";
     card.innerHTML = `
       <div
         class="account-header account-summary ${isExpanded ? "expanded" : ""}"
@@ -772,7 +929,7 @@ function renderAccounts() {
       </div>
       <div class="row account-adjust-row ${isExpanded ? "" : "hidden"}" onclick="event.stopPropagation()">
         <input id="amount-${account.id}" class="input amount-input" type="number" step="0.01" placeholder="Amount (+/-)" />
-        <button class="btn btn-small" onclick="adjustAccount('${account.id}')">Adjust</button>
+        <button class="btn btn-secondary btn-small" onclick="adjustAccount('${account.id}')">Adjust</button>
         <button class="btn btn-secondary btn-small" onclick="silentAdjust('${account.id}')">Silent Adjust</button>
       </div>
       <div class="account-transactions ${isExpanded ? "" : "hidden"}" onclick="event.stopPropagation()">
@@ -785,9 +942,11 @@ function renderAccounts() {
   if (archivedToggleButton) {
     const toggleLabel = showArchivedAccounts ? "Hide" : "Show";
     archivedToggleButton.innerText = `Archived Accounts (${archivedAccounts.length}) - ${toggleLabel}`;
+    archivedToggleButton.classList.toggle("expanded", showArchivedAccounts);
   }
 
   if (!archivedList) return;
+  archivedList.classList.remove("archived-account-pills");
   archivedList.classList.toggle("hidden", !showArchivedAccounts);
   if (!showArchivedAccounts) return;
 
@@ -796,18 +955,55 @@ function renderAccounts() {
     return;
   }
 
-  archivedAccounts.forEach((account) => {
+  archivedList.classList.add("archived-account-pills");
+  const sortedArchivedAccounts = [...archivedAccounts].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+  );
+
+  sortedArchivedAccounts.forEach((account) => {
+    const isExpanded = expandedArchivedAccountId === account.id;
+    const accountTransactions = getTransactionsForAccount(account.id);
+    const showMoreTransactions = Boolean(archivedAccountTransactionsShowMoreById[account.id]);
+    const visibleTransactions = showMoreTransactions ? accountTransactions : accountTransactions.slice(0, 10);
+    const transactionsMarkup = accountTransactions.length === 0
+      ? '<p class="saved account-transactions-empty">No transactions for this account yet.</p>'
+      : `
+        <div class="account-transactions-list">
+          ${visibleTransactions.map((tx) => `
+            <button type="button" class="transaction-line-btn account-transaction-line" onclick="event.stopPropagation(); openTransactionModal('${tx.id}', { readOnly: true })">
+              <span class="account-transaction-left">
+                <span class="account-transaction-date">${escapeHtml(formatDateForDisplay(tx.date))}</span>
+                <span class="account-transaction-label">${escapeHtml(getTransactionCompactLabel(tx))}</span>
+              </span>
+              <span class="transaction-line-amount ${getAccountTransactionAmountClass(tx, account.id)}">${escapeHtml(getAccountTransactionAmountText(tx, account.id))}</span>
+            </button>
+          `).join("")}
+        </div>
+        ${accountTransactions.length > 10
+          ? `<div class="row account-transactions-toggle-row"><button class="btn btn-secondary btn-small" type="button" onclick="event.stopPropagation(); toggleArchivedAccountTransactionsShowMore('${account.id}')">${showMoreTransactions ? "Show Less" : "Show More"}</button></div>`
+          : ""}
+      `;
+
     const card = document.createElement("div");
-    card.className = "account-item";
+    card.className = "account-item archived-account-pill";
     card.innerHTML = `
-      <div class="account-header">
+      <div
+        class="account-header account-summary archived-account-summary ${isExpanded ? "expanded" : ""}"
+        role="button"
+        tabindex="0"
+        aria-expanded="${isExpanded}"
+        onclick="toggleArchivedAccountPanel('${account.id}')"
+        onkeydown="onArchivedAccountRowKeyDown(event, '${account.id}')"
+      >
         <div>
           <h3>${escapeHtml(account.name)}</h3>
-          <p class="saved">Archived</p>
         </div>
         <div class="account-actions">
-          <button class="btn btn-small" onclick="unarchiveAccount('${account.id}')">Unarchive</button>
+          <button class="btn btn-secondary btn-small archived-unarchive-btn" onclick="event.stopPropagation(); unarchiveAccount('${account.id}')">Unarchive</button>
         </div>
+      </div>
+      <div class="account-transactions ${isExpanded ? "" : "hidden"}" onclick="event.stopPropagation()">
+        ${transactionsMarkup}
       </div>
     `;
     archivedList.appendChild(card);
@@ -843,6 +1039,13 @@ function closeCategoryDropdown() {
   if (trigger) trigger.classList.remove("open");
 }
 
+function closeTransactionEditCategoryDropdown() {
+  const menu = document.getElementById("transactionEditCategoryMenu");
+  const trigger = document.getElementById("transactionEditCategoryTrigger");
+  if (menu) menu.classList.add("hidden");
+  if (trigger) trigger.classList.remove("open");
+}
+
 function setCategoryTriggerLabel(type, selectedValue = "") {
   const label = document.getElementById("transactionCategoryLabel");
   if (!label) return;
@@ -853,6 +1056,19 @@ function setCategoryTriggerLabel(type, selectedValue = "") {
   }
 
   const clean = normalizeCategoryName(selectedValue || selectedCategoryByType[type] || "");
+  label.innerText = clean || "Select category";
+}
+
+function setTransactionEditCategoryTriggerLabel(type, selectedValue = "") {
+  const label = document.getElementById("transactionEditCategoryLabel");
+  if (!label) return;
+
+  if (type !== "expense" && type !== "income") {
+    label.innerText = "Select category";
+    return;
+  }
+
+  const clean = normalizeCategoryName(selectedValue || selectedTransactionEditCategoryByType[type] || "");
   label.innerText = clean || "Select category";
 }
 
@@ -881,8 +1097,12 @@ function deleteCategoryFromType(type, categoryName) {
   if (normalizeCategoryName(selectedCategoryByType[type]).toLowerCase() === key) {
     selectedCategoryByType[type] = "";
   }
+  if (normalizeCategoryName(selectedTransactionEditCategoryByType[type]).toLowerCase() === key) {
+    selectedTransactionEditCategoryByType[type] = "";
+  }
 
   populateCategorySelect(type, selectedCategoryByType[type] || "");
+  populateTransactionEditCategorySelect(type, selectedTransactionEditCategoryByType[type] || "");
 }
 
 function promptAddCategory(type) {
@@ -898,11 +1118,31 @@ function promptAddCategory(type) {
   closeCategoryDropdown();
 }
 
+function promptAddTransactionEditCategory(type) {
+  if (type !== "expense" && type !== "income") return;
+
+  const entered = window.prompt(`New ${type} category name:`);
+  const newCategory = normalizeCategoryName(entered);
+  if (!newCategory) return;
+
+  const savedCategory = ensureCategoryOption(type, newCategory, true);
+  selectedTransactionEditCategoryByType[type] = savedCategory;
+  populateTransactionEditCategorySelect(type, savedCategory);
+  closeTransactionEditCategoryDropdown();
+}
+
 function selectCategory(type, categoryName) {
   if (type !== "expense" && type !== "income") return;
   selectedCategoryByType[type] = normalizeCategoryName(categoryName);
   populateCategorySelect(type, selectedCategoryByType[type]);
   closeCategoryDropdown();
+}
+
+function selectTransactionEditCategory(type, categoryName) {
+  if (type !== "expense" && type !== "income") return;
+  selectedTransactionEditCategoryByType[type] = normalizeCategoryName(categoryName);
+  populateTransactionEditCategorySelect(type, selectedTransactionEditCategoryByType[type]);
+  closeTransactionEditCategoryDropdown();
 }
 
 function populateCategorySelect(type, selectedValue = "") {
@@ -980,6 +1220,26 @@ function toggleCategoryDropdown() {
   }
 
   populateCategorySelect(type, selectedCategoryByType[type] || "");
+  menu.classList.remove("hidden");
+  trigger.classList.add("open");
+}
+
+function toggleTransactionEditCategoryDropdown() {
+  const typeInput = document.getElementById("transactionEditTypeInput");
+  const type = normalizeTransactionType(typeInput ? typeInput.value : "");
+  if (type !== "expense" && type !== "income") return;
+
+  const menu = document.getElementById("transactionEditCategoryMenu");
+  const trigger = document.getElementById("transactionEditCategoryTrigger");
+  if (!menu || !trigger || trigger.disabled) return;
+
+  const isHidden = menu.classList.contains("hidden");
+  if (!isHidden) {
+    closeTransactionEditCategoryDropdown();
+    return;
+  }
+
+  populateTransactionEditCategorySelect(type, selectedTransactionEditCategoryByType[type] || "");
   menu.classList.remove("hidden");
   trigger.classList.add("open");
 }
@@ -1126,11 +1386,21 @@ function updateTransactionHistoryRangeButton() {
   button.disabled = transactions.length === 0;
 }
 
+function toggleTransactionDayCollapsed(dateValue) {
+  const dateKey = toTrimmedString(dateValue);
+  if (!dateKey) return;
+
+  collapsedTransactionDatesByDate[dateKey] = !Boolean(collapsedTransactionDatesByDate[dateKey]);
+  renderTransactions();
+}
+
 function closeTransactionModal() {
   const closingTransactionId = activeTransactionModalId;
+  closeTransactionEditCategoryDropdown();
   activeTransactionModalId = "";
   transactionModalEditMode = false;
   transactionModalContext = null;
+  selectedTransactionEditCategoryByType = { expense: "", income: "" };
   if (closingTransactionId && closingTransactionId === activeGraphPointTransactionId) {
     activeGraphPointTransactionId = "";
   }
@@ -1138,9 +1408,11 @@ function closeTransactionModal() {
   const modalBody = document.getElementById("transactionModalBody");
   const deleteButton = document.getElementById("transactionModalDeleteBtn");
   const saveButton = document.getElementById("transactionModalSaveBtn");
+  const actions = document.getElementById("transactionModalActions");
   const title = document.getElementById("transactionModalTitle");
   if (modal) modal.classList.add("hidden");
   if (modalBody) modalBody.innerHTML = "";
+  if (actions) actions.classList.remove("transaction-modal-actions-edit");
   if (deleteButton) deleteButton.disabled = true;
   if (saveButton) {
     saveButton.disabled = true;
@@ -1191,36 +1463,61 @@ function populateTransactionEditAccountSelect(selectId, selectedValue = "") {
 }
 
 function populateTransactionEditCategorySelect(type, selectedValue = "") {
-  const categorySelect = document.getElementById("transactionEditCategoryInput");
-  if (!categorySelect) return;
+  const trigger = document.getElementById("transactionEditCategoryTrigger");
+  const menu = document.getElementById("transactionEditCategoryMenu");
+  if (!trigger || !menu) return;
 
   if (type !== "expense" && type !== "income") {
-    categorySelect.innerHTML = "";
-    categorySelect.disabled = true;
+    trigger.disabled = true;
+    menu.innerHTML = "";
+    setTransactionEditCategoryTriggerLabel(type, "");
+    closeTransactionEditCategoryDropdown();
     return;
   }
 
   const unknownCategory = ensureCategoryOption(type, UNKNOWN_CATEGORY, false);
-  const list = getCategoryListByType(type);
-  const selected = normalizeCategoryName(selectedValue);
-  categorySelect.innerHTML = "";
+  const selected = normalizeCategoryName(selectedValue || selectedTransactionEditCategoryByType[type] || "");
+  selectedTransactionEditCategoryByType[type] = selected || unknownCategory;
 
-  list.forEach((category) => {
-    const option = document.createElement("option");
-    option.value = category;
-    option.textContent = category;
-    categorySelect.appendChild(option);
+  menu.innerHTML = "";
+  getCategoryListByType(type).forEach((category) => {
+    const row = document.createElement("div");
+    row.className = "category-option-row";
+
+    const optionButton = document.createElement("button");
+    optionButton.type = "button";
+    optionButton.className = "category-option-btn";
+    optionButton.innerText = category;
+    if (selectedTransactionEditCategoryByType[type] && category.toLowerCase() === selectedTransactionEditCategoryByType[type].toLowerCase()) {
+      optionButton.classList.add("active");
+    }
+    optionButton.addEventListener("click", () => selectTransactionEditCategory(type, category));
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "category-delete-btn";
+    deleteButton.innerText = "X";
+    deleteButton.title = `Delete ${category}`;
+    deleteButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      deleteCategoryFromType(type, category);
+    });
+
+    row.appendChild(optionButton);
+    row.appendChild(deleteButton);
+    menu.appendChild(row);
   });
 
-  if (selected && !list.some((item) => item.toLowerCase() === selected.toLowerCase())) {
-    const customOption = document.createElement("option");
-    customOption.value = selected;
-    customOption.textContent = selected;
-    categorySelect.appendChild(customOption);
-  }
+  const addRow = document.createElement("button");
+  addRow.type = "button";
+  addRow.className = "category-add-btn";
+  addRow.innerText = "+ Add new category...";
+  addRow.addEventListener("click", () => promptAddTransactionEditCategory(type));
+  menu.appendChild(addRow);
 
-  categorySelect.disabled = false;
-  categorySelect.value = selected || unknownCategory;
+  trigger.disabled = false;
+  setTransactionEditCategoryTriggerLabel(type, selectedTransactionEditCategoryByType[type]);
 }
 
 function syncTransactionEditTypeUI(preferredCategory = "") {
@@ -1228,6 +1525,7 @@ function syncTransactionEditTypeUI(preferredCategory = "") {
   const accountGroup = document.getElementById("transactionEditAccountGroup");
   const transferGroup = document.getElementById("transactionEditTransferGroup");
   const categoryGroup = document.getElementById("transactionEditCategoryGroup");
+  const categoryTrigger = document.getElementById("transactionEditCategoryTrigger");
   const accountInput = document.getElementById("transactionEditAccountInput");
   const fromInput = document.getElementById("transactionEditFromAccountInput");
   const toInput = document.getElementById("transactionEditToAccountInput");
@@ -1235,6 +1533,7 @@ function syncTransactionEditTypeUI(preferredCategory = "") {
 
   const type = normalizeTransactionType(typeInput.value);
   const isTransfer = type === "transfer";
+  closeTransactionEditCategoryDropdown();
 
   accountGroup.classList.toggle("hidden", isTransfer);
   transferGroup.classList.toggle("hidden", !isTransfer);
@@ -1243,8 +1542,14 @@ function syncTransactionEditTypeUI(preferredCategory = "") {
   if (accountInput) accountInput.disabled = isTransfer;
   if (fromInput) fromInput.disabled = !isTransfer;
   if (toInput) toInput.disabled = !isTransfer;
+  if (categoryTrigger) categoryTrigger.disabled = isTransfer;
 
-  populateTransactionEditCategorySelect(type, preferredCategory);
+  if (isTransfer) {
+    setTransactionEditCategoryTriggerLabel(type, "");
+    return;
+  }
+
+  populateTransactionEditCategorySelect(type, preferredCategory || selectedTransactionEditCategoryByType[type] || "");
 }
 
 function onTransactionEditTypeChange() {
@@ -1285,6 +1590,10 @@ function getTransactionModalRows(tx) {
   return rows;
 }
 
+function isTransactionModalReadOnly() {
+  return Boolean(transactionModalContext && transactionModalContext.readOnly);
+}
+
 function renderTransactionModalContent() {
   if (!activeTransactionModalId) return;
 
@@ -1297,13 +1606,25 @@ function renderTransactionModalContent() {
   const modalBody = document.getElementById("transactionModalBody");
   const deleteButton = document.getElementById("transactionModalDeleteBtn");
   const saveButton = document.getElementById("transactionModalSaveBtn");
+  const actions = document.getElementById("transactionModalActions");
   const title = document.getElementById("transactionModalTitle");
   if (!modalBody || !deleteButton || !saveButton) return;
 
-  deleteButton.disabled = false;
-  saveButton.disabled = false;
+  const readOnly = isTransactionModalReadOnly();
+  if (readOnly && transactionModalEditMode) {
+    transactionModalEditMode = false;
+  }
+
+  deleteButton.disabled = readOnly ? true : false;
+  saveButton.disabled = readOnly ? true : false;
+  saveButton.classList.toggle("hidden", readOnly);
+  deleteButton.classList.toggle("hidden", readOnly);
   saveButton.innerText = transactionModalEditMode ? "Save Changes" : "Edit Transaction";
   if (title) title.innerText = transactionModalEditMode ? "Edit Transaction" : "Transaction Details";
+  if (actions) {
+    actions.classList.toggle("transaction-modal-actions-edit", transactionModalEditMode && !readOnly);
+    actions.classList.toggle("hidden", readOnly);
+  }
 
   if (!transactionModalEditMode) {
     const rows = getTransactionModalRows(tx);
@@ -1314,7 +1635,7 @@ function renderTransactionModalContent() {
   }
 
   modalBody.innerHTML = `
-    <div class="stack">
+    <div class="stack add-transaction-fields">
       <label class="label" for="transactionEditTypeInput">Type</label>
       <select id="transactionEditTypeInput" class="input" onchange="onTransactionEditTypeChange()">
         <option value="expense">Expense</option>
@@ -1326,7 +1647,7 @@ function renderTransactionModalContent() {
       <input id="transactionEditDateInput" class="input" type="date" />
 
       <label class="label" for="transactionEditAmountInput">Amount</label>
-      <input id="transactionEditAmountInput" class="input" type="number" step="0.01" min="0.01" />
+      <input id="transactionEditAmountInput" class="input" type="number" step="0.01" placeholder="Amount" />
 
       <div id="transactionEditAccountGroup" class="stack">
         <label class="label" for="transactionEditAccountInput">Account</label>
@@ -1341,12 +1662,15 @@ function renderTransactionModalContent() {
       </div>
 
       <div id="transactionEditCategoryGroup" class="stack">
-        <label class="label" for="transactionEditCategoryInput">Category</label>
-        <select id="transactionEditCategoryInput" class="input"></select>
+        <label class="label" for="transactionEditCategoryTrigger">Category</label>
+        <div class="category-dropdown" id="transactionEditCategoryDropdown">
+          <button id="transactionEditCategoryTrigger" class="input category-trigger" type="button" onclick="toggleTransactionEditCategoryDropdown()">
+            <span id="transactionEditCategoryLabel">Select category</span>
+            <span class="category-caret">v</span>
+          </button>
+          <div id="transactionEditCategoryMenu" class="category-menu hidden"></div>
+        </div>
       </div>
-
-      <label class="label" for="transactionEditCurrencyInput">Currency</label>
-      <input id="transactionEditCurrencyInput" class="input" placeholder="GBP" />
 
       <label class="label" for="transactionEditNoteInput">Note</label>
       <input id="transactionEditNoteInput" class="input" placeholder="Optional note" />
@@ -1361,7 +1685,6 @@ function renderTransactionModalContent() {
   const dateInput = document.getElementById("transactionEditDateInput");
   const amountInput = document.getElementById("transactionEditAmountInput");
   const noteInput = document.getElementById("transactionEditNoteInput");
-  const currencyInput = document.getElementById("transactionEditCurrencyInput");
   const accountInput = document.getElementById("transactionEditAccountInput");
   const fromInput = document.getElementById("transactionEditFromAccountInput");
   const toInput = document.getElementById("transactionEditToAccountInput");
@@ -1370,15 +1693,21 @@ function renderTransactionModalContent() {
   if (dateInput) dateInput.value = normalizeImportedDate(tx.date);
   if (amountInput) amountInput.value = String(tx.amount);
   if (noteInput) noteInput.value = tx.note || "";
-  if (currencyInput) currencyInput.value = (tx.currency || "GBP").toUpperCase();
   if (accountInput) accountInput.value = tx.accountId || "";
   if (fromInput) fromInput.value = tx.fromAccountId || "";
   if (toInput) toInput.value = tx.toAccountId || "";
+  selectedTransactionEditCategoryByType.expense = tx.type === "expense"
+    ? (normalizeCategoryName(tx.category) || UNKNOWN_CATEGORY)
+    : selectedTransactionEditCategoryByType.expense;
+  selectedTransactionEditCategoryByType.income = tx.type === "income"
+    ? (normalizeCategoryName(tx.category) || UNKNOWN_CATEGORY)
+    : selectedTransactionEditCategoryByType.income;
   syncTransactionEditTypeUI(tx.category || "");
 }
 
 function onTransactionModalEditOrSave() {
   if (!activeTransactionModalId) return;
+  if (isTransactionModalReadOnly()) return;
 
   if (!transactionModalEditMode) {
     transactionModalEditMode = true;
@@ -1404,9 +1733,11 @@ function openTransactionModal(transactionId, context = null) {
   transactionModalContext = context && typeof context === "object"
     ? {
         balanceAfter: Number(context.balanceAfter),
-        balanceLabel: toTrimmedString(context.balanceLabel)
+        balanceLabel: toTrimmedString(context.balanceLabel),
+        readOnly: Boolean(context.readOnly)
       }
     : null;
+  selectedTransactionEditCategoryByType = { expense: "", income: "" };
   if (!transactionModalContext) {
     activeGraphPointTransactionId = "";
   }
@@ -1427,12 +1758,10 @@ function saveTransactionFromModal() {
   const dateInput = document.getElementById("transactionEditDateInput");
   const amountInput = document.getElementById("transactionEditAmountInput");
   const noteInput = document.getElementById("transactionEditNoteInput");
-  const currencyInput = document.getElementById("transactionEditCurrencyInput");
   const accountInput = document.getElementById("transactionEditAccountInput");
   const fromInput = document.getElementById("transactionEditFromAccountInput");
   const toInput = document.getElementById("transactionEditToAccountInput");
-  const categoryInput = document.getElementById("transactionEditCategoryInput");
-  if (!typeInput || !dateInput || !amountInput || !noteInput || !currencyInput || !accountInput || !fromInput || !toInput || !categoryInput) {
+  if (!typeInput || !dateInput || !amountInput || !noteInput || !accountInput || !fromInput || !toInput) {
     return;
   }
 
@@ -1449,9 +1778,9 @@ function saveTransactionFromModal() {
 
   const date = normalizeImportedDate(dateInput.value);
   const note = toTrimmedString(noteInput.value);
-  const currency = toTrimmedString(currencyInput.value).toUpperCase() || "GBP";
   const accountIds = new Set(accounts.map((account) => account.id));
   const tx = transactions[txIndex];
+  const preservedCurrency = toTrimmedString(tx.currency).toUpperCase() || "GBP";
 
   if (type === "transfer") {
     const fromAccountId = toTrimmedString(fromInput.value);
@@ -1469,7 +1798,7 @@ function saveTransactionFromModal() {
     tx.toAccountId = toAccountId;
     tx.category = "";
     tx.note = note;
-    tx.currency = currency;
+    tx.currency = preservedCurrency;
   } else {
     const accountId = toTrimmedString(accountInput.value);
     if (!accountIds.has(accountId)) {
@@ -1477,7 +1806,7 @@ function saveTransactionFromModal() {
       return;
     }
 
-    const categoryValue = normalizeCategoryName(categoryInput.value);
+    const categoryValue = normalizeCategoryName(selectedTransactionEditCategoryByType[type] || "");
     if (!categoryValue) {
       window.alert('Choose a category. Use "Unknown" if needed.');
       return;
@@ -1492,7 +1821,7 @@ function saveTransactionFromModal() {
     tx.toAccountId = "";
     tx.category = category;
     tx.note = note;
-    tx.currency = currency;
+    tx.currency = preservedCurrency;
   }
 
   saveTransactions();
@@ -1502,6 +1831,7 @@ function saveTransactionFromModal() {
 
 function deleteTransactionFromModal() {
   if (!activeTransactionModalId) return;
+  if (isTransactionModalReadOnly()) return;
   const transactionId = activeTransactionModalId;
   closeTransactionModal();
   deleteTransaction(transactionId);
@@ -1531,6 +1861,13 @@ function renderTransactions() {
     return;
   }
 
+  const visibleDateKeys = new Set(visibleTransactions.map((tx) => tx.date));
+  Object.keys(collapsedTransactionDatesByDate).forEach((dateKey) => {
+    if (!visibleDateKeys.has(dateKey)) {
+      delete collapsedTransactionDatesByDate[dateKey];
+    }
+  });
+
   const groupedByDate = new Map();
   visibleTransactions.forEach((tx) => {
     if (!groupedByDate.has(tx.date)) {
@@ -1542,25 +1879,34 @@ function renderTransactions() {
   groupedByDate.forEach((items, dateValue) => {
     const group = document.createElement("div");
     group.className = "transaction-date-group";
+    const isCollapsed = Boolean(collapsedTransactionDatesByDate[dateValue]);
 
     const dayNet = normalizeMoney(items.reduce((sum, tx) => sum + getTransactionNetImpact(tx), 0));
 
-    const heading = document.createElement("div");
-    heading.className = "transaction-date-heading";
+    const heading = document.createElement("button");
+    heading.type = "button";
+    heading.className = `transaction-date-heading${isCollapsed ? " collapsed" : ""}`;
+    heading.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+    heading.addEventListener("click", () => toggleTransactionDayCollapsed(dateValue));
+
     const headingDate = document.createElement("span");
     headingDate.className = "transaction-date-title";
     headingDate.innerText = formatDateForDisplay(dateValue);
+
+    const headingMeta = document.createElement("span");
+    headingMeta.className = "transaction-date-meta";
 
     const headingNet = document.createElement("span");
     headingNet.className = "transaction-date-net";
     headingNet.innerText = formatSignedMoney(dayNet);
 
+    headingMeta.appendChild(headingNet);
     heading.appendChild(headingDate);
-    heading.appendChild(headingNet);
+    heading.appendChild(headingMeta);
     group.appendChild(heading);
 
     const lines = document.createElement("div");
-    lines.className = "transaction-lines";
+    lines.className = `transaction-lines${isCollapsed ? " hidden" : ""}`;
 
     items.forEach((tx) => {
       const lineButton = document.createElement("button");
@@ -1654,6 +2000,122 @@ function onCategoryBreakdownLegendContainerClick(event) {
   onCategoryBreakdownLegendClick(categoryName);
 }
 
+function normalizeArcAngle(angle) {
+  const fullCircle = Math.PI * 2;
+  let normalized = angle % fullCircle;
+  if (normalized < 0) normalized += fullCircle;
+  return normalized;
+}
+
+function isAngleWithinArc(angle, startAngle, endAngle) {
+  const normalizedAngle = normalizeArcAngle(angle);
+  const normalizedStart = normalizeArcAngle(startAngle);
+  const normalizedEnd = normalizeArcAngle(endAngle);
+  if (normalizedStart <= normalizedEnd) {
+    return normalizedAngle >= normalizedStart && normalizedAngle <= normalizedEnd;
+  }
+  return normalizedAngle >= normalizedStart || normalizedAngle <= normalizedEnd;
+}
+
+function getCategoryBreakdownSliceAtPoint(pointX, pointY) {
+  for (const target of categoryBreakdownSliceTargets) {
+    const dx = pointX - target.centerX;
+    const dy = pointY - target.centerY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    if (distance < target.innerRadius || distance > target.outerRadius) continue;
+
+    const angle = Math.atan2(dy, dx);
+    if (!isAngleWithinArc(angle, target.startAngle, target.endAngle)) continue;
+    return target;
+  }
+  return null;
+}
+
+function getCategoryBreakdownHoverTooltipElement() {
+  if (categoryBreakdownHoverTooltipRef && document.body.contains(categoryBreakdownHoverTooltipRef)) {
+    return categoryBreakdownHoverTooltipRef;
+  }
+
+  const tooltip = document.createElement("div");
+  tooltip.id = "categoryBreakdownHoverTag";
+  tooltip.className = "chart-hover-tag hidden";
+  tooltip.setAttribute("role", "status");
+  tooltip.setAttribute("aria-live", "polite");
+  document.body.appendChild(tooltip);
+  categoryBreakdownHoverTooltipRef = tooltip;
+  return tooltip;
+}
+
+function hideCategoryBreakdownHoverTooltip() {
+  if (!categoryBreakdownHoverTooltipRef) return;
+  categoryBreakdownHoverTooltipRef.classList.add("hidden");
+  categoryBreakdownHoverTooltipRef.innerText = "";
+}
+
+function showCategoryBreakdownHoverTooltip(label, clientX, clientY) {
+  const tooltip = getCategoryBreakdownHoverTooltipElement();
+  tooltip.innerText = normalizeCategoryName(label) || UNKNOWN_CATEGORY;
+  tooltip.classList.remove("hidden");
+
+  const offset = 12;
+  let left = clientX + offset;
+  let top = clientY + offset;
+  const rect = tooltip.getBoundingClientRect();
+  if (left + rect.width > window.innerWidth - 8) {
+    left = Math.max(8, window.innerWidth - rect.width - 8);
+  }
+  if (top + rect.height > window.innerHeight - 8) {
+    top = Math.max(8, clientY - rect.height - offset);
+  }
+
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+}
+
+function onCategoryBreakdownCanvasClick(event) {
+  if (activeTab !== "categories") return;
+  if (categoryBreakdownSliceTargets.length === 0) return;
+
+  const canvas = document.getElementById("categoryBreakdownChart");
+  if (!canvas) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const clickX = event.clientX - rect.left;
+  const clickY = event.clientY - rect.top;
+  const target = getCategoryBreakdownSliceAtPoint(clickX, clickY);
+  if (!target) return;
+  onCategoryBreakdownLegendClick(target.category);
+}
+
+function onCategoryBreakdownCanvasMouseMove(event) {
+  const canvas = document.getElementById("categoryBreakdownChart");
+  if (!canvas) return;
+  if (activeTab !== "categories" || categoryBreakdownSliceTargets.length === 0) {
+    canvas.style.cursor = "default";
+    hideCategoryBreakdownHoverTooltip();
+    return;
+  }
+
+  const rect = canvas.getBoundingClientRect();
+  const hoverX = event.clientX - rect.left;
+  const hoverY = event.clientY - rect.top;
+  const target = getCategoryBreakdownSliceAtPoint(hoverX, hoverY);
+  if (!target) {
+    canvas.style.cursor = "default";
+    hideCategoryBreakdownHoverTooltip();
+    return;
+  }
+
+  canvas.style.cursor = "pointer";
+  showCategoryBreakdownHoverTooltip(target.category, event.clientX, event.clientY);
+}
+
+function onCategoryBreakdownCanvasMouseLeave() {
+  const canvas = document.getElementById("categoryBreakdownChart");
+  if (canvas) canvas.style.cursor = "default";
+  hideCategoryBreakdownHoverTooltip();
+}
+
 function toggleCategoryBreakdownTransactionsShowAll() {
   categoryBreakdownTransactionsShowAll = !categoryBreakdownTransactionsShowAll;
   renderCategoryBreakdown();
@@ -1672,16 +2134,32 @@ function drawCategoryBreakdownEmptyChart(context, width, height, message) {
   context.fillText(message, width / 2, height / 2);
 }
 
+function syncCategoryBreakdownTypeToggle() {
+  const expenseBtn = document.getElementById("categoryBreakdownTypeExpenseBtn");
+  const incomeBtn = document.getElementById("categoryBreakdownTypeIncomeBtn");
+  if (!expenseBtn || !incomeBtn) return;
+
+  const isExpense = normalizeBreakdownType(selectedCategoryBreakdownType) === "expense";
+  expenseBtn.classList.toggle("active", isExpense);
+  incomeBtn.classList.toggle("active", !isExpense);
+
+  expenseBtn.setAttribute("aria-selected", isExpense ? "true" : "false");
+  incomeBtn.setAttribute("aria-selected", isExpense ? "false" : "true");
+  expenseBtn.tabIndex = isExpense ? 0 : -1;
+  incomeBtn.tabIndex = isExpense ? -1 : 0;
+}
+
 function renderCategoryBreakdown() {
-  const typeSelect = document.getElementById("categoryBreakdownTypeInput");
   const monthSelect = document.getElementById("categoryBreakdownMonthInput");
   const canvas = document.getElementById("categoryBreakdownChart");
   const summary = document.getElementById("categoryBreakdownSummary");
   const legend = document.getElementById("categoryBreakdownLegend");
-  if (!typeSelect || !monthSelect || !canvas || !summary || !legend) return;
+  if (!monthSelect || !canvas || !summary || !legend) return;
 
   selectedCategoryBreakdownType = normalizeBreakdownType(selectedCategoryBreakdownType);
-  typeSelect.value = selectedCategoryBreakdownType;
+  hideCategoryBreakdownHoverTooltip();
+  categoryBreakdownSliceTargets = [];
+  syncCategoryBreakdownTypeToggle();
   if (selectedCategoryBreakdownMonthByType[selectedCategoryBreakdownType]) {
     selectedCategoryBreakdownMonth = selectedCategoryBreakdownMonthByType[selectedCategoryBreakdownType];
   }
@@ -1707,6 +2185,7 @@ function renderCategoryBreakdown() {
     canvas.height = Math.floor(cssHeight * pixelRatio);
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     drawCategoryBreakdownEmptyChart(context, cssWidth, cssHeight, "No transactions yet for this type.");
+    canvas.style.cursor = "default";
     summary.innerText = `No ${selectedCategoryBreakdownType} transactions available yet.`;
     legend.innerHTML = "";
     return;
@@ -1746,6 +2225,7 @@ function renderCategoryBreakdown() {
     legend.innerHTML = "";
     selectedCategoryBreakdownCategory = "";
     categoryBreakdownTransactionsShowAll = false;
+    canvas.style.cursor = "default";
     return;
   }
 
@@ -1753,14 +2233,18 @@ function renderCategoryBreakdown() {
   const centerY = cssHeight / 2;
   const radius = Math.min(cssWidth, cssHeight) * 0.34;
   const ringWidth = Math.max(26, radius * 0.45);
+  const innerRadius = Math.max(0, radius - ringWidth / 2);
+  const outerRadius = radius + ringWidth / 2;
   let startAngle = -Math.PI / 2;
   let consumedAngle = 0;
+  canvas.style.cursor = "default";
 
   data.forEach((item, index) => {
     const sweepAngle = index === data.length - 1
       ? (Math.PI * 2 - consumedAngle)
       : ((item.total / total) * Math.PI * 2);
     const endAngle = startAngle + sweepAngle;
+    const normalizedCategory = normalizeCategoryName(item.category) || UNKNOWN_CATEGORY;
 
     context.strokeStyle = getCategoryBreakdownColor(index);
     context.lineWidth = ringWidth;
@@ -1768,6 +2252,16 @@ function renderCategoryBreakdown() {
     context.beginPath();
     context.arc(centerX, centerY, radius, startAngle, endAngle);
     context.stroke();
+
+    categoryBreakdownSliceTargets.push({
+      category: normalizedCategory,
+      startAngle,
+      endAngle,
+      centerX,
+      centerY,
+      innerRadius,
+      outerRadius
+    });
 
     consumedAngle += sweepAngle;
     startAngle = endAngle;
@@ -2607,12 +3101,21 @@ function unarchiveAccount(accountId) {
   if (!account.archived) return;
 
   account.archived = false;
+  if (expandedArchivedAccountId === accountId) {
+    expandedArchivedAccountId = "";
+  }
+  delete archivedAccountTransactionsShowMoreById[accountId];
   saveAccounts();
   render();
 }
 
 function toggleArchivedAccountsVisibility() {
   showArchivedAccounts = !showArchivedAccounts;
+  renderAccounts();
+}
+
+function toggleArchivedAccountPanel(accountId) {
+  expandedArchivedAccountId = expandedArchivedAccountId === accountId ? "" : accountId;
   renderAccounts();
 }
 
@@ -2626,10 +3129,21 @@ function toggleAccountTransactionsShowAll(accountId) {
   renderAccounts();
 }
 
+function toggleArchivedAccountTransactionsShowMore(accountId) {
+  archivedAccountTransactionsShowMoreById[accountId] = !Boolean(archivedAccountTransactionsShowMoreById[accountId]);
+  renderAccounts();
+}
+
 function onAccountHeaderKeyDown(event, accountId) {
   if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return;
   event.preventDefault();
   toggleAccountAdjustPanel(accountId);
+}
+
+function onArchivedAccountRowKeyDown(event, accountId) {
+  if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return;
+  event.preventDefault();
+  toggleArchivedAccountPanel(accountId);
 }
 
 function onTransactionTypeChange() {
@@ -2853,6 +3367,27 @@ async function readImportRows(file) {
     return { rows: [], rowNumberOffset: 2 };
   }
 
+  const normalizedSheets = workbook.SheetNames.map((name) => ({
+    raw: name,
+    normalized: toTrimmedString(name).toLowerCase()
+  }));
+  const accountsSheet = normalizedSheets.find((sheet) => sheet.normalized === "accounts");
+  const transactionsSheet = normalizedSheets.find(
+    (sheet) => sheet.normalized === "transactions" || sheet.normalized === "transaction"
+  );
+
+  if (accountsSheet && transactionsSheet) {
+    const accountsWorksheet = workbook.Sheets[accountsSheet.raw];
+    const transactionsWorksheet = workbook.Sheets[transactionsSheet.raw];
+    return {
+      mode: "workbook_dataset",
+      accountsRows: window.XLSX.utils.sheet_to_json(accountsWorksheet, { defval: "", raw: true }),
+      transactionRows: window.XLSX.utils.sheet_to_json(transactionsWorksheet, { defval: "", raw: true }),
+      accountsRowNumberOffset: 2,
+      transactionRowNumberOffset: 2
+    };
+  }
+
   const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
   return {
     rows: window.XLSX.utils.sheet_to_json(firstSheet, { defval: "", raw: true }),
@@ -2871,25 +3406,77 @@ function getNormalizedRow(row) {
 function getFirstValue(row, keys) {
   for (const key of keys) {
     if (Object.prototype.hasOwnProperty.call(row, key)) {
+      const value = row[key];
+      if (toTrimmedString(value) !== "") {
+        return value;
+      }
+    }
+  }
+
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(row, key)) {
       return row[key];
     }
   }
+
   return "";
 }
 
-function parseImportedAmount(rawAmount) {
+function parseImportedSignedAmount(rawAmount) {
   if (typeof rawAmount === "number") {
-    return Number.isFinite(rawAmount) ? normalizeMoney(Math.abs(rawAmount)) : 0;
+    return Number.isFinite(rawAmount) ? normalizeMoney(rawAmount) : null;
   }
 
   const text = toTrimmedString(rawAmount);
-  if (!text) return 0;
+  if (!text) return null;
 
-  const match = text.match(/[-+]?\d[\d,]*(?:\.\d+)?/);
-  if (!match) return 0;
+  const compact = text.replaceAll(" ", "");
+  const sanitized = compact.replace(/[^0-9.,()+-]/g, "");
+  if (!sanitized) return null;
+  const wrappedInParentheses = sanitized.startsWith("(") && sanitized.endsWith(")");
+  const source = wrappedInParentheses ? sanitized.slice(1, -1) : sanitized;
+  const match = source.match(/[-+]?\d[\d,]*(?:\.\d+)?/);
+  if (!match) return null;
 
-  const numeric = Number.parseFloat(match[0].replaceAll(",", ""));
-  return Number.isFinite(numeric) ? normalizeMoney(Math.abs(numeric)) : 0;
+  let numeric = Number.parseFloat(match[0].replaceAll(",", ""));
+  if (!Number.isFinite(numeric)) return null;
+  if (wrappedInParentheses && numeric > 0) {
+    numeric = -numeric;
+  }
+
+  return normalizeMoney(numeric);
+}
+
+function parseImportedAmount(rawAmount) {
+  const parsed = parseImportedSignedAmount(rawAmount);
+  if (!Number.isFinite(parsed)) return 0;
+  return normalizeMoney(Math.abs(parsed));
+}
+
+function parseImportedBoolean(rawValue) {
+  if (typeof rawValue === "boolean") return rawValue;
+  if (typeof rawValue === "number") return rawValue !== 0;
+
+  const text = toTrimmedString(rawValue).toLowerCase();
+  if (!text) return false;
+  if (["true", "yes", "y", "1", "archived"].includes(text)) return true;
+  if (["false", "no", "n", "0", "active"].includes(text)) return false;
+  return false;
+}
+
+function getUniqueImportedId(preferredId, usedIds) {
+  const clean = toTrimmedString(preferredId);
+  if (clean && !usedIds.has(clean)) {
+    usedIds.add(clean);
+    return clean;
+  }
+
+  let generatedId = generateId();
+  while (usedIds.has(generatedId)) {
+    generatedId = generateId();
+  }
+  usedIds.add(generatedId);
+  return generatedId;
 }
 
 function parseTransferAccountsFromField(rawAccountField) {
@@ -2904,7 +3491,10 @@ function parseTransferAccountsFromField(rawAccountField) {
   return { from: parts[0], to: parts[parts.length - 1] };
 }
 
-function getOrCreateAccountIdByName(accountName, createdDate, counters) {
+function getOrCreateAccountIdByName(accountName, createdDate, counters, options = {}) {
+  const config = {
+    unarchiveArchived: options.unarchiveArchived !== false
+  };
   const cleanName = toTrimmedString(accountName);
   if (!cleanName) return "";
 
@@ -2913,7 +3503,9 @@ function getOrCreateAccountIdByName(accountName, createdDate, counters) {
 
   const existingArchived = accounts.find((account) => account.archived && account.name.toLowerCase() === cleanName.toLowerCase());
   if (existingArchived) {
-    existingArchived.archived = false;
+    if (config.unarchiveArchived) {
+      existingArchived.archived = false;
+    }
     return existingArchived.id;
   }
 
@@ -2929,15 +3521,96 @@ function getOrCreateAccountIdByName(accountName, createdDate, counters) {
   return newAccount.id;
 }
 
-function importTransactionsFromRows(rows, rowNumberOffset = 2) {
-  const counters = { added: 0, skipped: 0, createdAccounts: 0, failedRows: [] };
+function importAccountsFromRows(rows, rowNumberOffset = 2) {
+  const counters = { added: 0, skipped: 0, failedRows: [] };
+  const importedAccounts = [];
+  const currentBalanceTargets = {};
+  const usedAccountIds = new Set();
+  const usedNames = new Set();
 
   rows.forEach((rawRow, index) => {
     const row = getNormalizedRow(rawRow);
     const rowNumber = index + rowNumberOffset;
-    const accountSinglePreview = toTrimmedString(getFirstValue(row, ["account", "accountname"]));
-    let accountFr = toTrimmedString(getFirstValue(row, ["accountfr", "accountfrom", "fromaccount"]));
-    let accountTo = toTrimmedString(getFirstValue(row, ["accountto", "toaccount"]));
+    const accountName = toTrimmedString(getFirstValue(row, ["account", "name", "accountname"]));
+    const nameKey = accountName.toLowerCase();
+    const openingRaw = getFirstValue(row, ["openingbalance", "openingbal", "openingb", "initialbalance", "startingbalance"]);
+    const currentRaw = getFirstValue(row, ["currentbalance", "currentbal", "currentb", "balance", "current"]);
+
+    const recordFailure = (reason) => {
+      counters.failedRows.push(`Accounts row ${rowNumber}: ${reason} | account=${accountName || "(blank)"}`);
+      counters.skipped += 1;
+    };
+
+    if (!accountName) {
+      recordFailure("Missing account name");
+      return;
+    }
+
+    if (usedNames.has(nameKey)) {
+      recordFailure(`Duplicate account name "${accountName}"`);
+      return;
+    }
+
+    const openingBalance = parseImportedSignedAmount(openingRaw);
+    const currentBalance = parseImportedSignedAmount(currentRaw);
+    const createdDate = normalizeImportedDate(getFirstValue(row, ["createddate", "createdd", "created", "createdat", "date"]));
+    const archived = parseImportedBoolean(getFirstValue(row, ["archived", "isarchived"]));
+    const accountId = getUniqueImportedId(getFirstValue(row, ["id", "accountid"]), usedAccountIds);
+
+    importedAccounts.push({
+      id: accountId,
+      name: accountName,
+      initialBalance: Number.isFinite(openingBalance) ? openingBalance : 0,
+      createdDate: isValidDateInput(createdDate) ? createdDate : getTodayDateInputValue(),
+      archived
+    });
+
+    if (Number.isFinite(currentBalance)) {
+      currentBalanceTargets[accountId] = currentBalance;
+    }
+
+    usedNames.add(nameKey);
+    counters.added += 1;
+  });
+
+  return {
+    accounts: importedAccounts,
+    currentBalanceTargets,
+    counters
+  };
+}
+
+function applyImportedCurrentBalanceTargets(currentBalanceTargets) {
+  if (!currentBalanceTargets || typeof currentBalanceTargets !== "object") return;
+
+  const balances = getBalanceMap();
+  Object.entries(currentBalanceTargets).forEach(([accountId, targetBalance]) => {
+    if (!Number.isFinite(targetBalance)) return;
+    const account = accounts.find((item) => item.id === accountId);
+    if (!account) return;
+
+    const currentBalance = getSafeAmount(balances[accountId] || 0);
+    const delta = normalizeMoney(targetBalance - currentBalance);
+    if (Math.abs(delta) < 0.0001) return;
+    account.initialBalance = normalizeMoney(account.initialBalance + delta);
+  });
+}
+
+function importTransactionsFromRows(rows, rowNumberOffset = 2, options = {}) {
+  const config = {
+    unarchiveArchivedMatch: options.unarchiveArchivedMatch !== false,
+    preserveImportedId: Boolean(options.preserveImportedId),
+    preserveCreatedAt: Boolean(options.preserveCreatedAt)
+  };
+  const counters = { added: 0, skipped: 0, createdAccounts: 0, failedRows: [] };
+  const usedTransactionIds = new Set(transactions.map((tx) => tx.id));
+
+  rows.forEach((rawRow, index) => {
+    const row = getNormalizedRow(rawRow);
+    const rowNumber = index + rowNumberOffset;
+    const accountSinglePreview = toTrimmedString(getFirstValue(row, ["account", "accountname", "accountid"]));
+    let accountFr = toTrimmedString(getFirstValue(row, ["accountfr", "accountfrom", "fromaccount", "accountf"]));
+    let accountTo = toTrimmedString(getFirstValue(row, ["accountto", "toaccount", "accountt"]));
 
     const recordFailure = (reason) => {
       const typeValue = toTrimmedString(getFirstValue(row, ["type", "transactiontype"])) || "(blank)";
@@ -2979,18 +3652,24 @@ function importTransactionsFromRows(rows, rowNumberOffset = 2) {
     if (currency && currency !== "GBP") noteParts.push(`Currency: ${currency}`);
     const note = noteParts.join(" | ");
 
-    const createdAt = new Date(dateToTimestamp(date) + index).toISOString();
+    const parsedCreatedAt = Date.parse(getFirstValue(row, ["createdat", "createda", "created", "createdon"]));
+    const createdAt = config.preserveCreatedAt && Number.isFinite(parsedCreatedAt)
+      ? new Date(parsedCreatedAt).toISOString()
+      : new Date(dateToTimestamp(date) + index).toISOString();
+    const importedId = config.preserveImportedId ? getFirstValue(row, ["id", "transactionid"]) : "";
+    const transactionId = getUniqueImportedId(importedId, usedTransactionIds);
+    const accountLookupOptions = { unarchiveArchived: config.unarchiveArchivedMatch };
 
     if (type === "transfer") {
-      const fromAccountId = getOrCreateAccountIdByName(accountFr, date, counters);
-      const toAccountId = getOrCreateAccountIdByName(accountTo, date, counters);
+      const fromAccountId = getOrCreateAccountIdByName(accountFr, date, counters, accountLookupOptions);
+      const toAccountId = getOrCreateAccountIdByName(accountTo, date, counters, accountLookupOptions);
       if (!fromAccountId || !toAccountId || fromAccountId === toAccountId) {
         recordFailure("Transfer requires different from/to accounts");
         return;
       }
 
       transactions.push({
-        id: generateId(),
+        id: transactionId,
         type,
         date,
         amount,
@@ -3007,7 +3686,7 @@ function importTransactionsFromRows(rows, rowNumberOffset = 2) {
     }
 
     const singleAccountName = accountSinglePreview || (type === "expense" ? (accountFr || accountTo) : (accountTo || accountFr));
-    const accountId = getOrCreateAccountIdByName(singleAccountName, date, counters);
+    const accountId = getOrCreateAccountIdByName(singleAccountName, date, counters, accountLookupOptions);
     if (!accountId) {
       recordFailure("Missing account name for income/expense");
       return;
@@ -3019,7 +3698,7 @@ function importTransactionsFromRows(rows, rowNumberOffset = 2) {
     const category = ensureCategoryOption(type, importedCategory, false);
 
     transactions.push({
-      id: generateId(),
+      id: transactionId,
       type,
       date,
       amount,
@@ -3269,6 +3948,74 @@ async function importTransactionsFile() {
 
   try {
     const importPayload = await readImportRows(file);
+
+    if (importPayload && importPayload.mode === "workbook_dataset") {
+      const accountRows = Array.isArray(importPayload.accountsRows) ? importPayload.accountsRows : [];
+      const transactionRows = Array.isArray(importPayload.transactionRows) ? importPayload.transactionRows : [];
+      const accountsRowNumberOffset = Number.isInteger(importPayload.accountsRowNumberOffset)
+        ? importPayload.accountsRowNumberOffset
+        : 2;
+      const transactionRowNumberOffset = Number.isInteger(importPayload.transactionRowNumberOffset)
+        ? importPayload.transactionRowNumberOffset
+        : 2;
+
+      if (accountRows.length === 0 && transactionRows.length === 0) {
+        setStatusPanelMessage("dataImportStatus", "No rows found in Accounts or Transactions sheets.", "error");
+        return;
+      }
+
+      if ((accounts.length > 0 || transactions.length > 0) && !window.confirm(
+        "This workbook contains Accounts and Transactions and will replace your current local data. Continue?"
+      )) {
+        setStatusPanelMessage("dataImportStatus", "Import cancelled.", "info");
+        return;
+      }
+
+      const importedAccountPayload = importAccountsFromRows(accountRows, accountsRowNumberOffset);
+      accounts = importedAccountPayload.accounts;
+      transactions = [];
+
+      const transactionCounters = importTransactionsFromRows(
+        transactionRows,
+        transactionRowNumberOffset,
+        {
+          unarchiveArchivedMatch: false,
+          preserveImportedId: true,
+          preserveCreatedAt: true
+        }
+      );
+
+      applyImportedCurrentBalanceTargets(importedAccountPayload.currentBalanceTargets);
+      syncCategoriesFromTransactions();
+      persistAll();
+      render();
+      selectedImportFile = null;
+      if (fileInput) fileInput.value = "";
+      updateImportFileSelectionState();
+
+      const allFailedRows = [
+        ...importedAccountPayload.counters.failedRows,
+        ...transactionCounters.failedRows
+      ];
+      showImportFailuresPopup(allFailedRows);
+
+      const totalSkipped = importedAccountPayload.counters.skipped + transactionCounters.skipped;
+      const accountCount = accounts.length;
+      const transactionCount = transactionCounters.added;
+
+      if (accountCount === 0 && transactionCount === 0) {
+        setStatusPanelMessage("dataImportStatus", `No data imported. Skipped ${totalSkipped} row(s).`, "error");
+        return;
+      }
+
+      setStatusPanelMessage(
+        "dataImportStatus",
+        `Imported ${accountCount} account(s) and ${transactionCount} transaction(s).`,
+        "success"
+      );
+      return;
+    }
+
     const rows = Array.isArray(importPayload) ? importPayload : importPayload.rows;
     const rowNumberOffset = Number.isInteger(importPayload?.rowNumberOffset) ? importPayload.rowNumberOffset : 2;
     if (!rows || rows.length === 0) {
@@ -3404,18 +4151,38 @@ function onGraphFilterChange() {
   renderGraph();
 }
 
-function onCategoryBreakdownTypeChange() {
-  const typeSelect = document.getElementById("categoryBreakdownTypeInput");
+function onCategoryBreakdownTypeChange(nextType = "") {
   const previousType = normalizeBreakdownType(selectedCategoryBreakdownType);
   if (previousType === "expense" || previousType === "income") {
     selectedCategoryBreakdownMonthByType[previousType] = selectedCategoryBreakdownMonth;
   }
 
-  selectedCategoryBreakdownType = normalizeBreakdownType(typeSelect ? typeSelect.value : "expense");
+  selectedCategoryBreakdownType = normalizeBreakdownType(nextType || selectedCategoryBreakdownType);
   selectedCategoryBreakdownMonth = selectedCategoryBreakdownMonthByType[selectedCategoryBreakdownType] || selectedCategoryBreakdownMonth;
   selectedCategoryBreakdownCategory = "";
   categoryBreakdownTransactionsShowAll = false;
   renderCategoryBreakdown();
+}
+
+function onCategoryBreakdownTypeKeyDown(event, currentType) {
+  const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+  if (!keys.includes(event.key)) return;
+  event.preventDefault();
+
+  const normalizedCurrent = normalizeBreakdownType(currentType);
+  let nextType = normalizedCurrent;
+  if (event.key === "Home") nextType = "expense";
+  if (event.key === "End") nextType = "income";
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    nextType = normalizedCurrent === "expense" ? "income" : "expense";
+  }
+
+  onCategoryBreakdownTypeChange(nextType);
+  const nextButtonId = nextType === "income"
+    ? "categoryBreakdownTypeIncomeBtn"
+    : "categoryBreakdownTypeExpenseBtn";
+  const nextButton = document.getElementById(nextButtonId);
+  if (nextButton) nextButton.focus();
 }
 
 function onCategoryBreakdownMonthChange() {
@@ -3446,6 +4213,7 @@ function clearAllTransactions() {
 
   transactions = [];
   transactionHistoryShowAll = false;
+  collapsedTransactionDatesByDate = {};
   closeTransactionModal();
   closeGraphPointModal();
   saveTransactions();
@@ -3466,6 +4234,9 @@ function showTab(tabName) {
   }
   if (activeTab !== "graph") {
     closeGraphPointModal();
+  }
+  if (activeTab !== "categories") {
+    hideCategoryBreakdownHoverTooltip();
   }
 
   document.getElementById("dashboardTab").classList.toggle("hidden", activeTab !== "dashboard");
@@ -3517,6 +4288,13 @@ function setUpdateNowStatus(message = "", isError = false) {
   if (!status) return;
   status.innerText = message;
   status.classList.toggle("error", Boolean(isError));
+}
+
+function setUpdateNowCheckingState(isChecking = false) {
+  const button = document.getElementById("updateNowBtn");
+  if (!button) return;
+  button.disabled = Boolean(isChecking);
+  button.classList.toggle("btn-checking", Boolean(isChecking));
 }
 
 function waitForWaitingServiceWorker(registration, timeoutMs = 7000) {
@@ -3628,8 +4406,7 @@ async function onUpdateNowClick() {
     return;
   }
 
-  const button = document.getElementById("updateNowBtn");
-  if (button) button.disabled = true;
+  setUpdateNowCheckingState(true);
   setUpdateNowStatus("Checking for update...");
 
   try {
@@ -3657,7 +4434,7 @@ async function onUpdateNowClick() {
   } catch {
     setUpdateNowStatus("Unable to check for updates right now.", true);
   } finally {
-    if (button) button.disabled = false;
+    setUpdateNowCheckingState(false);
   }
 }
 
@@ -3665,6 +4442,7 @@ window.onload = function () {
   mountSharedModalsToBody();
   registerServiceWorkerWithUpdatePrompt();
   loadAccounts();
+  loadTotalExcludedAccountIds();
   loadCategoryOptions();
   loadTransactions();
   loadLastExportMeta();
@@ -3681,6 +4459,12 @@ window.onload = function () {
   if (categoryLegend) {
     categoryLegend.addEventListener("click", onCategoryBreakdownLegendContainerClick);
   }
+  const categoryCanvas = document.getElementById("categoryBreakdownChart");
+  if (categoryCanvas) {
+    categoryCanvas.addEventListener("click", onCategoryBreakdownCanvasClick);
+    categoryCanvas.addEventListener("mousemove", onCategoryBreakdownCanvasMouseMove);
+    categoryCanvas.addEventListener("mouseleave", onCategoryBreakdownCanvasMouseLeave);
+  }
 
   const hint = document.getElementById("installHint");
   if (hint) hint.innerText = "";
@@ -3696,11 +4480,13 @@ window.addEventListener("resize", () => {
 });
 
 document.addEventListener("click", (event) => {
-  const dropdown = document.getElementById("transactionCategoryDropdown");
-  if (!dropdown) return;
-
-  if (!dropdown.contains(event.target)) {
+  const addDropdown = document.getElementById("transactionCategoryDropdown");
+  const editDropdown = document.getElementById("transactionEditCategoryDropdown");
+  if (addDropdown && !addDropdown.contains(event.target)) {
     closeCategoryDropdown();
+  }
+  if (editDropdown && !editDropdown.contains(event.target)) {
+    closeTransactionEditCategoryDropdown();
   }
 });
 

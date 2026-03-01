@@ -24,14 +24,22 @@
     <section id="dashboardTab" class="tab-panel">
       <div class="card">
         <h2>Total Across All Accounts</h2>
-        <p id="totalBalance" class="big">GBP 0.00</p>
+        <div class="total-balance-row">
+          <p id="totalBalance" class="big">GBP 0.00</p>
+          <div class="row total-filter-row">
+            <button id="totalFilterToggleBtn" class="btn btn-secondary btn-small" type="button" onclick="toggleTotalFilterPanel()">Filter Accounts</button>
+            <button id="totalFilterResetBtn" class="btn btn-secondary btn-small hidden" type="button" onclick="resetTotalFilter()">Reset Filter</button>
+          </div>
+        </div>
+        <div id="totalFilterPanel" class="total-filter-panel hidden"></div>
+        <p id="totalFilterSummary" class="saved total-filter-summary hidden"></p>
       </div>
 
       <div class="card">
         <div class="section-title-row section-title-row-three accounts-header-row">
           <h2>Accounts</h2>
           <span class="section-title-spacer section-title-center-btn" aria-hidden="true"></span>
-          <button class="btn btn-small section-title-right-btn" type="button" onclick="openAddAccountModal()">Add Account</button>
+          <button class="btn btn-secondary btn-small section-title-right-btn" type="button" onclick="openAddAccountModal()">Add Account</button>
         </div>
         <div id="accountsList" class="stack"></div>
         <button id="archivedAccountsToggleBtn" class="archive-toggle-btn" type="button" onclick="toggleArchivedAccountsVisibility()">
@@ -49,7 +57,7 @@
           <div class="stack">
             <input id="accountNameInput" class="input" placeholder="Account name (e.g. Current Account)" />
             <input id="initialBalanceInput" class="input" type="number" step="0.01" placeholder="Initial balance (e.g. 1200.50)" />
-            <button class="btn" type="button" onclick="addAccount()">Add Account</button>
+            <button class="btn btn-secondary" type="button" onclick="addAccount()">Add Account</button>
           </div>
         </div>
       </div>
@@ -60,12 +68,12 @@
         <div class="section-title-row transactions-header-row">
           <h2>Transactions</h2>
           <div class="transaction-header-actions">
-            <button id="openAddTransactionBtn" class="btn btn-small" type="button" onclick="openAddTransactionModal()">Add Transaction</button>
+            <button id="openAddTransactionBtn" class="btn btn-secondary btn-small" type="button" onclick="openAddTransactionModal()">Add Transaction</button>
           </div>
         </div>
         <div id="transactionsList" class="stack"></div>
         <div class="row transaction-history-footer-row">
-          <button id="transactionHistoryRangeBtn" class="btn btn-small transaction-history-range-btn" type="button" onclick="toggleTransactionHistoryRange()">Show All</button>
+          <button id="transactionHistoryRangeBtn" class="btn btn-secondary btn-small transaction-history-range-btn" type="button" onclick="toggleTransactionHistoryRange()">Show All</button>
           <button class="btn btn-danger btn-small transaction-clear-btn" type="button" onclick="clearAllTransactions()">Delete All Transactions</button>
         </div>
       </div>
@@ -117,7 +125,7 @@
             <p class="import-dropzone-icon" aria-hidden="true">[file]</p>
             <p class="import-dropzone-title">Drag & drop your file here</p>
             <p class="import-dropzone-or">or</p>
-            <button type="button" class="btn btn-small" onclick="event.stopPropagation(); triggerImportFilePicker()">Browse files</button>
+            <button type="button" class="btn btn-secondary btn-small" onclick="event.stopPropagation(); triggerImportFilePicker()">Browse files</button>
           </div>
 
           <input
@@ -137,6 +145,7 @@
           <div id="importFormatPanel" class="data-format-panel hidden">
             <p class="data-format-line"><span class="data-format-label">CSV/Excel columns:</span> type, amount, account_from, account_to, category, remark, currency, date</p>
             <p class="data-format-line"><span class="data-format-label">JSON supports:</span> type, amount, account, category, remark, currency, date</p>
+            <p class="data-format-line"><span class="data-format-label">2-sheet XLSX:</span> <strong>Accounts</strong> (id, account, current_balance, opening_balance, archived, created_date) and <strong>Transactions</strong> (id, type, amount, account, account_fr, account_to, category, remark, currency, date, created_at)</p>
           </div>
 
           <p id="importSelectedFileInfo" class="saved hidden"></p>
@@ -165,8 +174,8 @@
             <button class="btn btn-secondary btn-small" type="button" onclick="closeTransactionModal()">Close</button>
           </div>
           <div id="transactionModalBody" class="stack"></div>
-          <div class="row transaction-modal-actions">
-            <button id="transactionModalSaveBtn" class="btn btn-small" type="button" onclick="onTransactionModalEditOrSave()" disabled>Edit Transaction</button>
+          <div id="transactionModalActions" class="row transaction-modal-actions">
+            <button id="transactionModalSaveBtn" class="btn btn-secondary btn-small" type="button" onclick="onTransactionModalEditOrSave()" disabled>Edit Transaction</button>
             <button id="transactionModalDeleteBtn" class="btn btn-danger btn-small" type="button" onclick="deleteTransactionFromModal()">Delete Transaction</button>
           </div>
         </div>
@@ -178,7 +187,7 @@
             <h3 class="modal-title">Add Transaction</h3>
             <button class="btn btn-secondary btn-small" type="button" onclick="closeAddTransactionModal()">Close</button>
           </div>
-          <div class="stack">
+          <div class="stack add-transaction-fields">
             <label class="label" for="transactionTypeInput">Type</label>
             <select id="transactionTypeInput" class="input" onchange="onTransactionTypeChange()">
               <option value="expense">Expense</option>
@@ -218,7 +227,7 @@
             <label class="label" for="transactionNoteInput">Note</label>
             <input id="transactionNoteInput" class="input" placeholder="Optional note" />
 
-            <button id="addTransactionBtn" class="btn" type="button" onclick="addTransaction()">Add Transaction</button>
+            <button id="addTransactionBtn" class="btn btn-secondary" type="button" onclick="addTransaction()">Add Transaction</button>
           </div>
         </div>
       </div>
@@ -252,7 +261,7 @@
         <canvas id="balanceChart" class="chart" height="280"></canvas>
         <div class="row filter-row">
           <div class="row zoom-controls">
-            <button class="btn btn-secondary btn-small" type="button" onclick="onGraphZoomOutClick()">-</button>
+            <button class="btn btn-small" type="button" onclick="onGraphZoomOutClick()">-</button>
             <button class="btn btn-small" type="button" onclick="onGraphZoomInClick()">+</button>
           </div>
         </div>
@@ -268,11 +277,33 @@
       <div class="card">
         <h2>Category Breakdown</h2>
         <div class="row filter-row">
-          <label for="categoryBreakdownTypeInput" class="label">Type:</label>
-          <select id="categoryBreakdownTypeInput" class="input select-input" onchange="onCategoryBreakdownTypeChange()">
-            <option value="expense">Expense</option>
-            <option value="income">Income</option>
-          </select>
+          <span class="label">Type:</span>
+          <div class="data-tab-pills breakdown-type-pills" role="tablist" aria-label="Category breakdown type">
+            <button
+              id="categoryBreakdownTypeExpenseBtn"
+              class="data-tab-btn active"
+              role="tab"
+              aria-selected="true"
+              tabindex="0"
+              type="button"
+              onclick="onCategoryBreakdownTypeChange('expense')"
+              onkeydown="onCategoryBreakdownTypeKeyDown(event, 'expense')"
+            >
+              Expense
+            </button>
+            <button
+              id="categoryBreakdownTypeIncomeBtn"
+              class="data-tab-btn"
+              role="tab"
+              aria-selected="false"
+              tabindex="-1"
+              type="button"
+              onclick="onCategoryBreakdownTypeChange('income')"
+              onkeydown="onCategoryBreakdownTypeKeyDown(event, 'income')"
+            >
+              Income
+            </button>
+          </div>
         </div>
         <div class="row filter-row">
           <label for="categoryBreakdownMonthInput" class="label">Month:</label>
