@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Account Balance Tracker</title>
+  <title>Ledger</title>
   <link rel="stylesheet" href="style.css" />
   <link rel="manifest" href="manifest.json" />
   <meta name="theme-color" content="#000000" />
@@ -11,13 +11,13 @@
 <body>
   <div class="container">
     <header class="header">
-      <h1>Account Balance Tracker</h1>
+      <h1>Ledger</h1>
     </header>
 
     <div class="tabs">
       <button id="tabDashboardBtn" class="tab-btn active" onclick="showTab('dashboard')">Accounts</button>
       <button id="tabTransactionsBtn" class="tab-btn" onclick="showTab('transactions')">Transactions</button>
-      <button id="tabGraphBtn" class="tab-btn" onclick="showTab('graph')">Graph</button>
+      <button id="tabGraphBtn" class="tab-btn" onclick="showTab('graph')">Trends</button>
       <button id="tabCategoriesBtn" class="tab-btn" onclick="showTab('categories')">Categories</button>
     </div>
 
@@ -29,7 +29,7 @@
 
       <div class="card">
         <div class="section-title-row section-title-row-three accounts-header-row">
-          <h2>Your Accounts</h2>
+          <h2>Accounts</h2>
           <span class="section-title-spacer section-title-center-btn" aria-hidden="true"></span>
           <button class="btn btn-small section-title-right-btn" type="button" onclick="openAddAccountModal()">Add Account</button>
         </div>
@@ -58,15 +58,15 @@
     <section id="transactionsTab" class="tab-panel hidden">
       <div class="card">
         <div class="section-title-row transactions-header-row">
-          <h2>Transaction History</h2>
+          <h2>Transactions</h2>
           <div class="transaction-header-actions">
-            <button class="btn btn-danger btn-small" onclick="clearAllTransactions()">Clear All Transactions</button>
             <button id="openAddTransactionBtn" class="btn btn-small" type="button" onclick="openAddTransactionModal()">Add Transaction</button>
           </div>
         </div>
         <div id="transactionsList" class="stack"></div>
-        <div class="row">
-          <button id="transactionHistoryRangeBtn" class="btn btn-secondary btn-small" type="button" onclick="toggleTransactionHistoryRange()">Show All</button>
+        <div class="row transaction-history-footer-row">
+          <button id="transactionHistoryRangeBtn" class="btn btn-small transaction-history-range-btn" type="button" onclick="toggleTransactionHistoryRange()">Show All</button>
+          <button class="btn btn-danger btn-small transaction-clear-btn" type="button" onclick="clearAllTransactions()">Clear All Transactions</button>
         </div>
       </div>
 
@@ -137,7 +137,6 @@
           <div id="importFormatPanel" class="data-format-panel hidden">
             <p class="data-format-line"><span class="data-format-label">CSV/Excel columns:</span> type, amount, account_from, account_to, category, remark, currency, date</p>
             <p class="data-format-line"><span class="data-format-label">JSON supports:</span> type, amount, account, category, remark, currency, date</p>
-            <button class="btn btn-secondary btn-small" type="button" onclick="downloadImportTemplate()">Download template</button>
           </div>
 
           <p id="importSelectedFileInfo" class="saved hidden"></p>
@@ -162,12 +161,12 @@
       <div id="transactionModal" class="modal hidden" onclick="onTransactionModalBackdropClick(event)">
         <div class="modal-card" onclick="event.stopPropagation()">
           <div class="modal-top">
-            <h3 class="modal-title">Edit Transaction</h3>
+            <h3 id="transactionModalTitle" class="modal-title">Transaction Details</h3>
             <button class="btn btn-secondary btn-small" type="button" onclick="closeTransactionModal()">Close</button>
           </div>
           <div id="transactionModalBody" class="stack"></div>
           <div class="row transaction-modal-actions">
-            <button id="transactionModalSaveBtn" class="btn btn-small" type="button" onclick="saveTransactionFromModal()" disabled>Save Changes</button>
+            <button id="transactionModalSaveBtn" class="btn btn-small" type="button" onclick="onTransactionModalEditOrSave()" disabled>Edit Transaction</button>
             <button id="transactionModalDeleteBtn" class="btn btn-danger btn-small" type="button" onclick="deleteTransactionFromModal()">Delete Transaction</button>
           </div>
         </div>
@@ -209,7 +208,7 @@
               <label class="label" for="transactionCategoryTrigger">Category</label>
               <div class="category-dropdown" id="transactionCategoryDropdown">
                 <button id="transactionCategoryTrigger" class="input category-trigger" type="button" onclick="toggleCategoryDropdown()">
-                  <span id="transactionCategoryLabel">Select category (optional)</span>
+                  <span id="transactionCategoryLabel">Select category</span>
                   <span class="category-caret">v</span>
                 </button>
                 <div id="transactionCategoryMenu" class="category-menu hidden"></div>
@@ -263,15 +262,6 @@
         <p id="graphSummary" class="saved"></p>
       </div>
 
-      <div id="graphPointModal" class="modal hidden" onclick="onGraphPointModalBackdropClick(event)">
-        <div class="modal-card" onclick="event.stopPropagation()">
-          <div class="modal-top">
-            <h3 class="modal-title">Graph Point Details</h3>
-            <button class="btn btn-secondary btn-small" type="button" onclick="closeGraphPointModal()">Close</button>
-          </div>
-          <div id="graphPointModalBody" class="stack"></div>
-        </div>
-      </div>
     </section>
 
     <section id="categoriesTab" class="tab-panel hidden">

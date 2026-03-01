@@ -22,7 +22,8 @@ const DEFAULT_CATEGORY_OPTIONS = {
     "Dental",
     "Hair/Nail",
     "Medical",
-    "Essential"
+    "Essential",
+    "Unknown"
   ],
   income: [
     "Salary",
@@ -30,9 +31,12 @@ const DEFAULT_CATEGORY_OPTIONS = {
     "Investment",
     "Gifts",
     "Others",
-    "Reimbursement"
+    "Reimbursement",
+    "Unknown"
   ]
 };
+const UNKNOWN_CATEGORY = "Unknown";
+const ACCOUNT_ADJUSTMENT_CATEGORY = "Account Adjustment";
 
 let accounts = [];
 let transactions = [];
@@ -49,6 +53,8 @@ let transactionHistoryShowAll = false;
 let showArchivedAccounts = false;
 let expandedAccountId = "";
 let activeTransactionModalId = "";
+let transactionModalEditMode = false;
+let transactionModalContext = null;
 let graphShowAllHistory = true;
 let graphShowTrendLine = true;
 let graphPointTargets = [];
@@ -57,6 +63,10 @@ let activeDataTab = "import";
 let showImportFormatDetails = false;
 let selectedImportFile = null;
 let lastExportMeta = null;
+let accountTransactionsShowAllById = {};
+let selectedCategoryBreakdownMonthByType = { expense: "", income: "" };
+let selectedCategoryBreakdownCategory = "";
+let categoryBreakdownTransactionsShowAll = false;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CATEGORY_BREAKDOWN_COLORS = [
   "#1f77b4",
@@ -265,6 +275,12 @@ function ensureCategoryOption(type, rawCategory, shouldSave = true) {
   }
 
   return clean;
+}
+
+function getTransactionCategoryOrUnknown(type, rawCategory, shouldSave = false) {
+  if (type !== "expense" && type !== "income") return "";
+  const clean = normalizeCategoryName(rawCategory);
+  return ensureCategoryOption(type, clean || UNKNOWN_CATEGORY, shouldSave);
 }
 
 function syncCategoriesFromTransactions() {
@@ -510,7 +526,7 @@ function loadTransactions() {
           fromAccountId: "",
           toAccountId: "",
           note,
-          category,
+          category: getTransactionCategoryOrUnknown(type, category, false),
           currency,
           createdAt
         };
@@ -712,20 +728,25 @@ function renderAccounts() {
     const canArchive = Math.abs(accountBalance) < 0.0001;
     const isExpanded = expandedAccountId === account.id;
     const accountTransactions = getTransactionsForAccount(account.id);
+    const showAllTransactions = Boolean(accountTransactionsShowAllById[account.id]);
+    const visibleTransactions = showAllTransactions ? accountTransactions : accountTransactions.slice(0, 5);
     const accountTransactionsMarkup = accountTransactions.length === 0
       ? '<p class="saved account-transactions-empty">No transactions for this account yet.</p>'
       : `
         <div class="account-transactions-list">
-          ${accountTransactions.map((tx) => `
+          ${visibleTransactions.map((tx) => `
             <button type="button" class="transaction-line-btn account-transaction-line" onclick="event.stopPropagation(); openTransactionModal('${tx.id}')">
               <span class="account-transaction-left">
                 <span class="account-transaction-date">${escapeHtml(formatDateForDisplay(tx.date))}</span>
-                <span class="transaction-line-label">${escapeHtml(getTransactionCompactLabel(tx))}</span>
+                <span class="account-transaction-label">${escapeHtml(getTransactionCompactLabel(tx))}</span>
               </span>
               <span class="transaction-line-amount ${getAccountTransactionAmountClass(tx, account.id)}">${escapeHtml(getAccountTransactionAmountText(tx, account.id))}</span>
             </button>
           `).join("")}
         </div>
+        ${accountTransactions.length > 5
+          ? `<div class="row account-transactions-toggle-row"><button class="btn btn-secondary btn-small" type="button" onclick="event.stopPropagation(); toggleAccountTransactionsShowAll('${account.id}')">${showAllTransactions ? "Show Last 5" : "Show All"}</button></div>`
+          : ""}
       `;
     const deleteButton = canArchive
       ? `<button class="btn btn-danger btn-small" onclick="event.stopPropagation(); deleteAccount('${account.id}')">Delete</button>`
@@ -827,12 +848,12 @@ function setCategoryTriggerLabel(type, selectedValue = "") {
   if (!label) return;
 
   if (type !== "expense" && type !== "income") {
-    label.innerText = "Select category (optional)";
+    label.innerText = "Select category";
     return;
   }
 
   const clean = normalizeCategoryName(selectedValue || selectedCategoryByType[type] || "");
-  label.innerText = clean || "Select category (optional)";
+  label.innerText = clean || "Select category";
 }
 
 function deleteCategoryFromType(type, categoryName) {
@@ -840,6 +861,10 @@ function deleteCategoryFromType(type, categoryName) {
 
   const selected = normalizeCategoryName(categoryName);
   if (!selected) return;
+  if (selected.toLowerCase() === UNKNOWN_CATEGORY.toLowerCase()) {
+    window.alert('"Unknown" is a protected category and cannot be deleted.');
+    return;
+  }
 
   if (isCategoryUsedByTransactions(type, selected)) {
     window.alert("You cannot delete this category because it is already used by at least one transaction.");
@@ -1038,7 +1063,7 @@ function getTransactionCompactLabel(tx) {
     return `${getAccountNameById(tx.fromAccountId)} -> ${getAccountNameById(tx.toAccountId)}`;
   }
 
-  return normalizeCategoryName(tx.category) || getAccountNameById(tx.accountId);
+  return normalizeCategoryName(tx.category) || UNKNOWN_CATEGORY;
 }
 
 function getTransactionCompactAmountText(tx) {
@@ -1102,15 +1127,26 @@ function updateTransactionHistoryRangeButton() {
 }
 
 function closeTransactionModal() {
+  const closingTransactionId = activeTransactionModalId;
   activeTransactionModalId = "";
+  transactionModalEditMode = false;
+  transactionModalContext = null;
+  if (closingTransactionId && closingTransactionId === activeGraphPointTransactionId) {
+    activeGraphPointTransactionId = "";
+  }
   const modal = document.getElementById("transactionModal");
   const modalBody = document.getElementById("transactionModalBody");
   const deleteButton = document.getElementById("transactionModalDeleteBtn");
   const saveButton = document.getElementById("transactionModalSaveBtn");
+  const title = document.getElementById("transactionModalTitle");
   if (modal) modal.classList.add("hidden");
   if (modalBody) modalBody.innerHTML = "";
   if (deleteButton) deleteButton.disabled = true;
-  if (saveButton) saveButton.disabled = true;
+  if (saveButton) {
+    saveButton.disabled = true;
+    saveButton.innerText = "Edit Transaction";
+  }
+  if (title) title.innerText = "Transaction Details";
 }
 
 function onTransactionModalBackdropClick(event) {
@@ -1164,14 +1200,10 @@ function populateTransactionEditCategorySelect(type, selectedValue = "") {
     return;
   }
 
+  const unknownCategory = ensureCategoryOption(type, UNKNOWN_CATEGORY, false);
   const list = getCategoryListByType(type);
   const selected = normalizeCategoryName(selectedValue);
   categorySelect.innerHTML = "";
-
-  const emptyOption = document.createElement("option");
-  emptyOption.value = "";
-  emptyOption.textContent = "Uncategorized";
-  categorySelect.appendChild(emptyOption);
 
   list.forEach((category) => {
     const option = document.createElement("option");
@@ -1188,7 +1220,7 @@ function populateTransactionEditCategorySelect(type, selectedValue = "") {
   }
 
   categorySelect.disabled = false;
-  categorySelect.value = selected;
+  categorySelect.value = selected || unknownCategory;
 }
 
 function syncTransactionEditTypeUI(preferredCategory = "") {
@@ -1219,22 +1251,67 @@ function onTransactionEditTypeChange() {
   syncTransactionEditTypeUI("");
 }
 
-function openTransactionModal(transactionId) {
-  const tx = transactions.find((item) => item.id === transactionId);
+function getTransactionTypeLabel(type) {
+  if (type === "expense") return "Expense";
+  if (type === "income") return "Income";
+  if (type === "transfer") return "Transfer";
+  return "Unknown";
+}
+
+function getTransactionModalRows(tx) {
+  const rows = [
+    { label: "Type", value: getTransactionTypeLabel(tx.type) },
+    { label: "Date", value: formatDateForDisplay(tx.date) },
+    { label: "Amount", value: getTransactionCompactAmountText(tx) }
+  ];
+
+  if (transactionModalContext && Number.isFinite(transactionModalContext.balanceAfter)) {
+    rows.unshift({
+      label: transactionModalContext.balanceLabel || "Balance after",
+      value: formatMoney(transactionModalContext.balanceAfter)
+    });
+  }
+
+  if (tx.type === "transfer") {
+    rows.push({ label: "From account", value: getAccountNameById(tx.fromAccountId) });
+    rows.push({ label: "To account", value: getAccountNameById(tx.toAccountId) });
+  } else {
+    rows.push({ label: "Account", value: getAccountNameById(tx.accountId) });
+    rows.push({ label: "Category", value: normalizeCategoryName(tx.category) || UNKNOWN_CATEGORY });
+  }
+
+  rows.push({ label: "Currency", value: tx.currency ? tx.currency.toUpperCase() : "GBP" });
+  rows.push({ label: "Note", value: tx.note ? tx.note : "No note" });
+  return rows;
+}
+
+function renderTransactionModalContent() {
+  if (!activeTransactionModalId) return;
+
+  const tx = transactions.find((item) => item.id === activeTransactionModalId);
   if (!tx) {
     closeTransactionModal();
     return;
   }
 
-  const modal = document.getElementById("transactionModal");
   const modalBody = document.getElementById("transactionModalBody");
   const deleteButton = document.getElementById("transactionModalDeleteBtn");
   const saveButton = document.getElementById("transactionModalSaveBtn");
-  if (!modal || !modalBody || !deleteButton || !saveButton) return;
+  const title = document.getElementById("transactionModalTitle");
+  if (!modalBody || !deleteButton || !saveButton) return;
 
-  activeTransactionModalId = tx.id;
   deleteButton.disabled = false;
   saveButton.disabled = false;
+  saveButton.innerText = transactionModalEditMode ? "Save Changes" : "Edit Transaction";
+  if (title) title.innerText = transactionModalEditMode ? "Edit Transaction" : "Transaction Details";
+
+  if (!transactionModalEditMode) {
+    const rows = getTransactionModalRows(tx);
+    modalBody.innerHTML = rows
+      .map((row) => `<p class="transaction-modal-line"><span class="transaction-modal-label">${escapeHtml(row.label)}</span><span>${escapeHtml(row.value)}</span></p>`)
+      .join("");
+    return;
+  }
 
   modalBody.innerHTML = `
     <div class="stack">
@@ -1298,7 +1375,42 @@ function openTransactionModal(transactionId) {
   if (fromInput) fromInput.value = tx.fromAccountId || "";
   if (toInput) toInput.value = tx.toAccountId || "";
   syncTransactionEditTypeUI(tx.category || "");
+}
 
+function onTransactionModalEditOrSave() {
+  if (!activeTransactionModalId) return;
+
+  if (!transactionModalEditMode) {
+    transactionModalEditMode = true;
+    renderTransactionModalContent();
+    return;
+  }
+
+  saveTransactionFromModal();
+}
+
+function openTransactionModal(transactionId, context = null) {
+  const tx = transactions.find((item) => item.id === transactionId);
+  if (!tx) {
+    closeTransactionModal();
+    return;
+  }
+
+  const modal = document.getElementById("transactionModal");
+  if (!modal) return;
+
+  activeTransactionModalId = tx.id;
+  transactionModalEditMode = false;
+  transactionModalContext = context && typeof context === "object"
+    ? {
+        balanceAfter: Number(context.balanceAfter),
+        balanceLabel: toTrimmedString(context.balanceLabel)
+      }
+    : null;
+  if (!transactionModalContext) {
+    activeGraphPointTransactionId = "";
+  }
+  renderTransactionModalContent();
   modal.classList.remove("hidden");
 }
 
@@ -1365,7 +1477,13 @@ function saveTransactionFromModal() {
       return;
     }
 
-    const category = ensureCategoryOption(type, normalizeCategoryName(categoryInput.value), true);
+    const categoryValue = normalizeCategoryName(categoryInput.value);
+    if (!categoryValue) {
+      window.alert('Choose a category. Use "Unknown" if needed.');
+      return;
+    }
+
+    const category = ensureCategoryOption(type, categoryValue, true);
     tx.type = type;
     tx.date = date;
     tx.amount = amount;
@@ -1485,7 +1603,7 @@ function getCategoryBreakdownData(type, monthKey) {
     if (tx.type !== type) return;
     if (getMonthKeyFromDateValue(tx.date) !== monthKey) return;
 
-    const category = normalizeCategoryName(tx.category) || "Uncategorized";
+    const category = normalizeCategoryName(tx.category) || UNKNOWN_CATEGORY;
     totals.set(category, normalizeMoney((totals.get(category) || 0) + tx.amount));
   });
 
@@ -1495,6 +1613,50 @@ function getCategoryBreakdownData(type, monthKey) {
       if (b.total !== a.total) return b.total - a.total;
       return a.category.localeCompare(b.category);
     });
+}
+
+function getCategoryBreakdownTransactions(type, monthKey, categoryName) {
+  const targetCategory = normalizeCategoryName(categoryName) || UNKNOWN_CATEGORY;
+  return sortTransactionsDescending().filter((tx) => {
+    if (tx.type !== type) return false;
+    if (getMonthKeyFromDateValue(tx.date) !== monthKey) return false;
+    const txCategory = normalizeCategoryName(tx.category) || UNKNOWN_CATEGORY;
+    return txCategory.toLowerCase() === targetCategory.toLowerCase();
+  });
+}
+
+function onCategoryBreakdownLegendClick(categoryName) {
+  const normalized = normalizeCategoryName(categoryName) || UNKNOWN_CATEGORY;
+  if (!normalized) return;
+
+  if (selectedCategoryBreakdownCategory === normalized) {
+    selectedCategoryBreakdownCategory = "";
+    categoryBreakdownTransactionsShowAll = false;
+  } else {
+    selectedCategoryBreakdownCategory = normalized;
+    categoryBreakdownTransactionsShowAll = false;
+  }
+
+  renderCategoryBreakdown();
+}
+
+function onCategoryBreakdownLegendContainerClick(event) {
+  const legend = document.getElementById("categoryBreakdownLegend");
+  if (!legend) return;
+
+  const targetButton = event.target instanceof Element
+    ? event.target.closest(".category-breakdown-legend-btn")
+    : null;
+  if (!targetButton || !legend.contains(targetButton)) return;
+
+  const categoryName = normalizeCategoryName(targetButton.dataset.category || "");
+  if (!categoryName) return;
+  onCategoryBreakdownLegendClick(categoryName);
+}
+
+function toggleCategoryBreakdownTransactionsShowAll() {
+  categoryBreakdownTransactionsShowAll = !categoryBreakdownTransactionsShowAll;
+  renderCategoryBreakdown();
 }
 
 function getCategoryBreakdownColor(index) {
@@ -1520,11 +1682,17 @@ function renderCategoryBreakdown() {
 
   selectedCategoryBreakdownType = normalizeBreakdownType(selectedCategoryBreakdownType);
   typeSelect.value = selectedCategoryBreakdownType;
+  if (selectedCategoryBreakdownMonthByType[selectedCategoryBreakdownType]) {
+    selectedCategoryBreakdownMonth = selectedCategoryBreakdownMonthByType[selectedCategoryBreakdownType];
+  }
 
   const availableMonths = getCategoryBreakdownAvailableMonths(selectedCategoryBreakdownType);
   monthSelect.innerHTML = "";
   if (availableMonths.length === 0) {
     selectedCategoryBreakdownMonth = "";
+    selectedCategoryBreakdownMonthByType[selectedCategoryBreakdownType] = "";
+    selectedCategoryBreakdownCategory = "";
+    categoryBreakdownTransactionsShowAll = false;
     const emptyOption = document.createElement("option");
     emptyOption.value = "";
     emptyOption.textContent = "No months available";
@@ -1553,8 +1721,10 @@ function renderCategoryBreakdown() {
   });
 
   if (!availableMonths.includes(selectedCategoryBreakdownMonth)) {
-    selectedCategoryBreakdownMonth = availableMonths[0];
+    const savedForType = selectedCategoryBreakdownMonthByType[selectedCategoryBreakdownType];
+    selectedCategoryBreakdownMonth = availableMonths.includes(savedForType) ? savedForType : availableMonths[0];
   }
+  selectedCategoryBreakdownMonthByType[selectedCategoryBreakdownType] = selectedCategoryBreakdownMonth;
   monthSelect.value = selectedCategoryBreakdownMonth;
 
   const data = getCategoryBreakdownData(selectedCategoryBreakdownType, selectedCategoryBreakdownMonth);
@@ -1574,6 +1744,8 @@ function renderCategoryBreakdown() {
     drawCategoryBreakdownEmptyChart(context, cssWidth, cssHeight, "No category data for this month.");
     summary.innerText = `${selectedCategoryBreakdownType === "expense" ? "Expenses" : "Income"} in ${monthLabel}: ${formatMoney(0)} across 0 categories.`;
     legend.innerHTML = "";
+    selectedCategoryBreakdownCategory = "";
+    categoryBreakdownTransactionsShowAll = false;
     return;
   }
 
@@ -1613,19 +1785,120 @@ function renderCategoryBreakdown() {
   const typeLabel = selectedCategoryBreakdownType === "expense" ? "Expenses" : "Income";
   summary.innerText = `${typeLabel} in ${monthLabel}: ${formatMoney(total)} across ${data.length} categor${data.length === 1 ? "y" : "ies"}.`;
 
-  legend.innerHTML = data.map((item, index) => {
+  const availableCategoryKeys = new Set(
+    data.map((item) => (normalizeCategoryName(item.category) || UNKNOWN_CATEGORY).toLowerCase())
+  );
+  if (!availableCategoryKeys.has((normalizeCategoryName(selectedCategoryBreakdownCategory) || "").toLowerCase())) {
+    selectedCategoryBreakdownCategory = "";
+    categoryBreakdownTransactionsShowAll = false;
+  }
+
+  legend.innerHTML = "";
+  data.forEach((item, index) => {
     const percentage = total > 0 ? ((item.total / total) * 100).toFixed(1) : "0.0";
     const valueText = `${formatMoney(item.total)} (${percentage}%)`;
-    return `
-      <div class="category-breakdown-legend-row">
-        <div class="category-breakdown-legend-left">
-          <span class="category-breakdown-color" style="background:${getCategoryBreakdownColor(index)};"></span>
-          <span class="category-breakdown-name">${escapeHtml(item.category)}</span>
-        </div>
-        <span class="category-breakdown-value">${escapeHtml(valueText)}</span>
-      </div>
-    `;
-  }).join("");
+    const normalizedCategory = normalizeCategoryName(item.category) || UNKNOWN_CATEGORY;
+    const isActive = selectedCategoryBreakdownCategory === normalizedCategory;
+    const wrapper = document.createElement("div");
+    wrapper.className = `category-breakdown-legend-item${isActive ? " active" : ""}`;
+
+    const rowButton = document.createElement("button");
+    rowButton.type = "button";
+    rowButton.className = `category-breakdown-legend-row category-breakdown-legend-btn${isActive ? " active" : ""}`;
+    rowButton.dataset.category = normalizedCategory;
+
+    const left = document.createElement("div");
+    left.className = "category-breakdown-legend-left";
+
+    const color = document.createElement("span");
+    color.className = "category-breakdown-color";
+    color.style.background = getCategoryBreakdownColor(index);
+    const name = document.createElement("span");
+    name.className = "category-breakdown-name";
+    name.innerText = normalizedCategory;
+    left.appendChild(color);
+    left.appendChild(name);
+
+    const value = document.createElement("span");
+    value.className = "category-breakdown-value";
+    value.innerText = valueText;
+
+    rowButton.appendChild(left);
+    rowButton.appendChild(value);
+    wrapper.appendChild(rowButton);
+
+    if (isActive) {
+      const categoryTransactions = getCategoryBreakdownTransactions(
+        selectedCategoryBreakdownType,
+        selectedCategoryBreakdownMonth,
+        selectedCategoryBreakdownCategory
+      );
+      const visibleTransactions = categoryBreakdownTransactionsShowAll
+        ? categoryTransactions
+        : categoryTransactions.slice(0, 5);
+
+      const details = document.createElement("div");
+      details.className = "category-breakdown-legend-details";
+
+      const count = document.createElement("p");
+      count.className = "saved category-breakdown-transactions-count";
+      count.innerText = `${categoryTransactions.length} transaction${categoryTransactions.length === 1 ? "" : "s"}`;
+      details.appendChild(count);
+
+      if (visibleTransactions.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "saved account-transactions-empty";
+        empty.innerText = "No transactions in this category.";
+        details.appendChild(empty);
+      } else {
+        const txList = document.createElement("div");
+        txList.className = "account-transactions-list";
+        visibleTransactions.forEach((tx) => {
+          const txButton = document.createElement("button");
+          txButton.type = "button";
+          txButton.className = "transaction-line-btn account-transaction-line";
+          txButton.addEventListener("click", () => openTransactionModal(tx.id));
+
+          const leftWrap = document.createElement("span");
+          leftWrap.className = "account-transaction-left";
+
+          const date = document.createElement("span");
+          date.className = "account-transaction-date";
+          date.innerText = formatDateForDisplay(tx.date);
+          const label = document.createElement("span");
+          label.className = "account-transaction-label";
+          label.innerText = getAccountNameById(tx.accountId);
+          leftWrap.appendChild(date);
+          leftWrap.appendChild(label);
+
+          const amount = document.createElement("span");
+          amount.className = `transaction-line-amount ${getTransactionCompactAmountClass(tx)}`;
+          amount.innerText = getTransactionCompactAmountText(tx);
+
+          txButton.appendChild(leftWrap);
+          txButton.appendChild(amount);
+          txList.appendChild(txButton);
+        });
+        details.appendChild(txList);
+      }
+
+      if (categoryTransactions.length > 5) {
+        const toggleRow = document.createElement("div");
+        toggleRow.className = "row account-transactions-toggle-row";
+        const toggleBtn = document.createElement("button");
+        toggleBtn.className = "btn btn-secondary btn-small";
+        toggleBtn.type = "button";
+        toggleBtn.innerText = categoryBreakdownTransactionsShowAll ? "Show Last 5" : "Show All";
+        toggleBtn.addEventListener("click", () => toggleCategoryBreakdownTransactionsShowAll());
+        toggleRow.appendChild(toggleBtn);
+        details.appendChild(toggleRow);
+      }
+
+      wrapper.appendChild(details);
+    }
+
+    legend.appendChild(wrapper);
+  });
 }
 
 function renderGraphFilter() {
@@ -1962,7 +2235,13 @@ function onGraphRangeScrollChange() {
 }
 
 function closeGraphPointModal() {
+  const graphTransactionId = activeGraphPointTransactionId;
   activeGraphPointTransactionId = "";
+
+  if (graphTransactionId && activeTransactionModalId === graphTransactionId) {
+    closeTransactionModal();
+  }
+
   const modal = document.getElementById("graphPointModal");
   const body = document.getElementById("graphPointModalBody");
   if (modal) modal.classList.add("hidden");
@@ -1980,39 +2259,16 @@ function showGraphPointModal(point) {
 
   const tx = transactions.find((item) => item.id === point.txId);
   if (!tx) return;
-
-  const modal = document.getElementById("graphPointModal");
-  const body = document.getElementById("graphPointModalBody");
-  if (!modal || !body) return;
-
   activeGraphPointTransactionId = tx.id;
-  const rows = [];
-  rows.push({
-    label: selectedGraphAccountId === "total"
-      ? "All accounts balance after"
-      : `${getAccountNameById(selectedGraphAccountId)} balance after`,
-    value: formatMoney(point.y)
+
+  const balanceLabel = selectedGraphAccountId === "total"
+    ? "All accounts balance after"
+    : `${getAccountNameById(selectedGraphAccountId)} balance after`;
+
+  openTransactionModal(tx.id, {
+    balanceAfter: point.y,
+    balanceLabel
   });
-  rows.push({ label: "Type", value: tx.type.toUpperCase() });
-  rows.push({ label: "Date", value: formatDateForDisplay(tx.date) });
-  rows.push({ label: "Amount", value: getTransactionCompactAmountText(tx) });
-
-  if (tx.type === "transfer") {
-    rows.push({ label: "From", value: getAccountNameById(tx.fromAccountId) });
-    rows.push({ label: "To", value: getAccountNameById(tx.toAccountId) });
-  } else {
-    rows.push({ label: "Account", value: getAccountNameById(tx.accountId) });
-    rows.push({ label: "Category", value: normalizeCategoryName(tx.category) || "Not set" });
-  }
-
-  rows.push({ label: "Currency", value: tx.currency ? tx.currency.toUpperCase() : "GBP" });
-  rows.push({ label: "Note", value: tx.note ? tx.note : "No note" });
-
-  body.innerHTML = rows
-    .map((row) => `<p class="transaction-modal-line"><span class="transaction-modal-label">${escapeHtml(row.label)}</span><span>${escapeHtml(row.value)}</span></p>`)
-    .join("");
-
-  modal.classList.remove("hidden");
 }
 
 function onGraphCanvasClick(event) {
@@ -2288,17 +2544,19 @@ function getSignedAccountAmount(accountId) {
 function adjustAccount(accountId) {
   const delta = getSignedAccountAmount(accountId);
   if (!delta) return;
+  const type = delta > 0 ? "income" : "expense";
+  const adjustmentCategory = ensureCategoryOption(type, ACCOUNT_ADJUSTMENT_CATEGORY, true);
 
   transactions.push({
     id: generateId(),
-    type: delta > 0 ? "income" : "expense",
+    type,
     date: getTodayDateInputValue(),
     amount: Math.abs(delta),
     accountId,
     fromAccountId: "",
     toAccountId: "",
     note: "Quick adjust",
-    category: "",
+    category: adjustmentCategory,
     currency: "GBP",
     createdAt: new Date().toISOString()
   });
@@ -2360,6 +2618,11 @@ function toggleArchivedAccountsVisibility() {
 
 function toggleAccountAdjustPanel(accountId) {
   expandedAccountId = expandedAccountId === accountId ? "" : accountId;
+  renderAccounts();
+}
+
+function toggleAccountTransactionsShowAll(accountId) {
+  accountTransactionsShowAllById[accountId] = !Boolean(accountTransactionsShowAllById[accountId]);
   renderAccounts();
 }
 
@@ -2435,7 +2698,12 @@ function addTransaction() {
   } else {
     const accountId = toTrimmedString(accountInput.value);
     if (!accountIds.has(accountId)) return;
-    const category = ensureCategoryOption(type, selectedCategoryByType[type] || "", true);
+    const selectedCategory = normalizeCategoryName(selectedCategoryByType[type] || "");
+    if (!selectedCategory) {
+      window.alert('Choose a category. Use "Unknown" if needed.');
+      return;
+    }
+    const category = ensureCategoryOption(type, selectedCategory, true);
     selectedCategoryByType[type] = category;
 
     transactions.push({
@@ -2744,6 +3012,10 @@ function importTransactionsFromRows(rows, rowNumberOffset = 2) {
       recordFailure("Missing account name for income/expense");
       return;
     }
+    if (!importedCategory) {
+      recordFailure('Missing category for income/expense (use "Unknown" if needed)');
+      return;
+    }
     const category = ensureCategoryOption(type, importedCategory, false);
 
     transactions.push({
@@ -2912,10 +3184,6 @@ function toggleImportFormatPanel() {
   renderImportFormatPanel();
 }
 
-function downloadImportTemplate() {
-  window.alert("Template download will be added in a future update.");
-}
-
 function switchDataTab(tabName) {
   activeDataTab = tabName === "export" ? "export" : "import";
 
@@ -3067,7 +3335,7 @@ function buildTransactionExportRows() {
       account: accountName,
       account_fr: fromAccountName,
       account_to: toAccountName,
-      category: tx.type === "transfer" ? "" : normalizeCategoryName(tx.category),
+      category: tx.type === "transfer" ? "" : (normalizeCategoryName(tx.category) || UNKNOWN_CATEGORY),
       remark: tx.note || "",
       currency: (tx.currency || "GBP").toUpperCase(),
       date: tx.date,
@@ -3138,14 +3406,24 @@ function onGraphFilterChange() {
 
 function onCategoryBreakdownTypeChange() {
   const typeSelect = document.getElementById("categoryBreakdownTypeInput");
+  const previousType = normalizeBreakdownType(selectedCategoryBreakdownType);
+  if (previousType === "expense" || previousType === "income") {
+    selectedCategoryBreakdownMonthByType[previousType] = selectedCategoryBreakdownMonth;
+  }
+
   selectedCategoryBreakdownType = normalizeBreakdownType(typeSelect ? typeSelect.value : "expense");
-  selectedCategoryBreakdownMonth = "";
+  selectedCategoryBreakdownMonth = selectedCategoryBreakdownMonthByType[selectedCategoryBreakdownType] || selectedCategoryBreakdownMonth;
+  selectedCategoryBreakdownCategory = "";
+  categoryBreakdownTransactionsShowAll = false;
   renderCategoryBreakdown();
 }
 
 function onCategoryBreakdownMonthChange() {
   const monthSelect = document.getElementById("categoryBreakdownMonthInput");
   selectedCategoryBreakdownMonth = toTrimmedString(monthSelect ? monthSelect.value : "");
+  selectedCategoryBreakdownMonthByType[selectedCategoryBreakdownType] = selectedCategoryBreakdownMonth;
+  selectedCategoryBreakdownCategory = "";
+  categoryBreakdownTransactionsShowAll = false;
   renderCategoryBreakdown();
 }
 
@@ -3208,7 +3486,18 @@ function showTab(tabName) {
   }
 }
 
+function mountSharedModalsToBody() {
+  ["transactionModal"].forEach((id) => {
+    const modal = document.getElementById(id);
+    if (!modal) return;
+    if (modal.parentElement !== document.body) {
+      document.body.appendChild(modal);
+    }
+  });
+}
+
 window.onload = function () {
+  mountSharedModalsToBody();
   loadAccounts();
   loadCategoryOptions();
   loadTransactions();
@@ -3222,10 +3511,13 @@ window.onload = function () {
   if (graphCanvas) {
     graphCanvas.addEventListener("click", onGraphCanvasClick);
   }
+  const categoryLegend = document.getElementById("categoryBreakdownLegend");
+  if (categoryLegend) {
+    categoryLegend.addEventListener("click", onCategoryBreakdownLegendContainerClick);
+  }
 
   const hint = document.getElementById("installHint");
-  hint.innerText =
-    "On Android Chrome: menu -> Install app / Add to Home screen (once hosted on HTTPS).";
+  if (hint) hint.innerText = "";
 };
 
 window.addEventListener("resize", () => {

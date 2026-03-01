@@ -136,6 +136,18 @@ body {
   justify-content: flex-end;
 }
 
+.transaction-history-footer-row {
+  margin-top: 8px;
+}
+
+.transaction-history-range-btn {
+  margin-top: 2px;
+}
+
+.transaction-clear-btn {
+  margin-left: auto;
+}
+
 .data-card-header {
   margin-bottom: 8px;
 }
@@ -445,6 +457,47 @@ body {
   gap: 10px;
 }
 
+.category-breakdown-legend-btn {
+  width: 100%;
+  text-align: left;
+  background: #fff;
+  cursor: pointer;
+}
+
+.category-breakdown-legend-btn:hover {
+  background: #fafafa;
+}
+
+.category-breakdown-legend-btn.active {
+  border-color: #c7c7c7;
+  background: #f3f3f3;
+}
+
+.category-breakdown-legend-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.category-breakdown-legend-item.active {
+  border-color: #c7c7c7;
+}
+
+.category-breakdown-legend-item .category-breakdown-legend-row {
+  border: none;
+  border-radius: 0;
+  width: 100%;
+}
+
+.category-breakdown-legend-details {
+  border-top: 1px solid var(--border);
+  background: #fff;
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+
 .category-breakdown-legend-left {
   display: flex;
   align-items: center;
@@ -555,15 +608,19 @@ body {
   border-radius: 10px;
   overflow: hidden;
   background: #fff;
+  width: 100%;
 }
 
 .account-transaction-line {
   border-radius: 0;
+  max-width: 100%;
+  align-items: flex-start;
 }
 
 .account-transaction-left {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
   flex: 1;
@@ -576,8 +633,48 @@ body {
   flex: 0 0 auto;
 }
 
+.account-transaction-label {
+  font-size: 14px;
+  color: #222;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.25;
+}
+
 .account-transactions-empty {
   margin: 0;
+}
+
+.account-transactions-toggle-row {
+  margin-top: 8px;
+}
+
+.category-breakdown-transactions {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+}
+
+.category-breakdown-transactions-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.category-breakdown-transactions-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.category-breakdown-transactions-count {
+  margin: 0;
+  white-space: nowrap;
 }
 
 #graphSummary {
@@ -776,6 +873,7 @@ body {
   font-size: 13px;
   font-weight: 400;
   white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 .transaction-line-income {
@@ -840,7 +938,7 @@ body {
 }
 
 .transaction-modal-actions {
-  justify-content: flex-end;
+  justify-content: space-between;
 }
 
 .saved {
@@ -914,6 +1012,11 @@ body {
     justify-content: flex-start;
     flex-wrap: wrap;
     gap: 8px;
+  }
+
+  .transaction-history-footer-row .btn {
+    flex: 0 0 auto;
+    min-width: 0;
   }
 
   .btn {

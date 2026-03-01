@@ -1,4 +1,4 @@
-const CACHE_NAME = "account-tracker-cache-v43";
+const CACHE_NAME = "account-tracker-cache-v50";
 
 const FILES_TO_CACHE = [
   "./",
