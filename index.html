@@ -71,23 +71,103 @@
       </div>
 
       <div class="card">
-        <h2>Import Transactions</h2>
-        <p class="saved">Upload Excel (.xlsx/.xls), CSV, or JSON. CSV/Excel columns: type, amount, account fr, account to, category, remark, currency, date. JSON also supports: type, amount, account, category, remark, currency, date.</p>
-        <div class="stack">
-          <input id="importFileInput" class="input" type="file" accept=".xlsx,.xls,.csv,.json" />
-          <button class="btn" onclick="importTransactionsFile()">Import File</button>
-          <p id="importResult" class="saved"></p>
+        <div class="section-title-row data-card-header">
+          <h2>Data</h2>
+          <div class="data-tab-pills" role="tablist" aria-label="Data actions">
+            <button
+              id="dataTabImport"
+              class="data-tab-btn active"
+              role="tab"
+              aria-selected="true"
+              aria-controls="dataImportPanel"
+              tabindex="0"
+              onclick="switchDataTab('import')"
+              onkeydown="onDataTabKeyDown(event, 'import')"
+              type="button"
+            >
+              Import
+            </button>
+            <button
+              id="dataTabExport"
+              class="data-tab-btn"
+              role="tab"
+              aria-selected="false"
+              aria-controls="dataExportPanel"
+              tabindex="-1"
+              onclick="switchDataTab('export')"
+              onkeydown="onDataTabKeyDown(event, 'export')"
+              type="button"
+            >
+              Export
+            </button>
+          </div>
+        </div>
+
+        <div id="dataImportPanel" class="data-tab-panel" role="tabpanel" aria-labelledby="dataTabImport">
+          <p class="saved data-subtitle">Secure local import &bull; CSV, Excel, JSON</p>
+          <div
+            id="importDropzone"
+            class="import-dropzone"
+            role="button"
+            tabindex="0"
+            aria-label="Drag and drop a transactions file here, or browse files"
+            onclick="triggerImportFilePicker()"
+            onkeydown="onImportDropzoneKeyDown(event)"
+          >
+            <p class="import-dropzone-icon" aria-hidden="true">[file]</p>
+            <p class="import-dropzone-title">Drag & drop your file here</p>
+            <p class="import-dropzone-or">or</p>
+            <button type="button" class="btn btn-small" onclick="event.stopPropagation(); triggerImportFilePicker()">Browse files</button>
+          </div>
+
+          <input
+            id="importFileInput"
+            class="input import-file-input"
+            type="file"
+            accept=".xlsx,.xls,.csv,.json"
+            onchange="onImportFileInputChange()"
+          />
+
+          <div class="row data-inline-row">
+            <button id="importFormatToggleBtn" class="text-link-btn" type="button" onclick="toggleImportFormatPanel()">
+              View required format ->
+            </button>
+          </div>
+
+          <div id="importFormatPanel" class="data-format-panel hidden">
+            <p class="data-format-line"><span class="data-format-label">CSV/Excel columns:</span> type, amount, account_from, account_to, category, remark, currency, date</p>
+            <p class="data-format-line"><span class="data-format-label">JSON supports:</span> type, amount, account, category, remark, currency, date</p>
+            <button class="btn btn-secondary btn-small" type="button" onclick="downloadImportTemplate()">Download template</button>
+          </div>
+
+          <p id="importSelectedFileInfo" class="saved hidden"></p>
+
+          <div class="row">
+            <button id="importTransactionsBtn" class="btn" type="button" onclick="importTransactionsFile()" disabled>Import Transactions</button>
+          </div>
+
+          <p id="dataImportStatus" class="status-panel hidden" role="status" aria-live="polite"></p>
+        </div>
+
+        <div id="dataExportPanel" class="data-tab-panel hidden" role="tabpanel" aria-labelledby="dataTabExport">
+          <p class="saved data-subtitle">Export all accounts and transactions</p>
+          <p id="dataExportMeta" class="data-export-meta"></p>
+          <div class="row">
+            <button class="btn" type="button" onclick="exportAllData()">Export Data</button>
+          </div>
+          <p id="dataExportStatus" class="status-panel hidden" role="status" aria-live="polite"></p>
         </div>
       </div>
 
       <div id="transactionModal" class="modal hidden" onclick="onTransactionModalBackdropClick(event)">
         <div class="modal-card" onclick="event.stopPropagation()">
           <div class="modal-top">
-            <h3 class="modal-title">Transaction Details</h3>
+            <h3 class="modal-title">Edit Transaction</h3>
             <button class="btn btn-secondary btn-small" type="button" onclick="closeTransactionModal()">Close</button>
           </div>
           <div id="transactionModalBody" class="stack"></div>
-          <div class="row">
+          <div class="row transaction-modal-actions">
+            <button id="transactionModalSaveBtn" class="btn btn-small" type="button" onclick="saveTransactionFromModal()" disabled>Save Changes</button>
             <button id="transactionModalDeleteBtn" class="btn btn-danger btn-small" type="button" onclick="deleteTransactionFromModal()">Delete Transaction</button>
           </div>
         </div>
@@ -223,3 +303,4 @@
   <script src="app.js"></script>
 </body>
 </html>
+

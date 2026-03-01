@@ -136,6 +136,175 @@ body {
   justify-content: flex-end;
 }
 
+.data-card-header {
+  margin-bottom: 8px;
+}
+
+.data-tab-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 3px;
+  background: #f5f5f5;
+}
+
+.data-tab-btn {
+  border: 1px solid #d7d7d7;
+  border-radius: 10px;
+  padding: 6px 12px;
+  background: transparent;
+  color: #222;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.data-tab-btn:hover {
+  background: #ececec;
+}
+
+.data-tab-btn:focus-visible {
+  outline: 2px solid #111;
+  outline-offset: 2px;
+}
+
+.data-tab-btn.active {
+  background: #111;
+  color: #fff;
+  border-color: #111;
+}
+
+.data-tab-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.data-subtitle {
+  margin: 0;
+}
+
+.import-file-input {
+  display: none;
+}
+
+.import-dropzone {
+  border: 1px dashed #bdbdbd;
+  border-radius: 12px;
+  background: #fafafa;
+  padding: 16px;
+  text-align: center;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  cursor: pointer;
+}
+
+.import-dropzone:hover {
+  background: #f3f3f3;
+  border-color: #9d9d9d;
+}
+
+.import-dropzone:focus-visible {
+  outline: 2px solid #111;
+  outline-offset: 2px;
+}
+
+.import-dropzone.drag-over {
+  background: #efefef;
+  border-color: #111;
+}
+
+.import-dropzone-icon {
+  margin: 0;
+  color: #666;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.import-dropzone-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #111;
+}
+
+.import-dropzone-or {
+  margin: 0;
+  color: #666;
+  font-size: 13px;
+}
+
+.data-inline-row {
+  justify-content: flex-end;
+}
+
+.text-link-btn {
+  border: none;
+  background: transparent;
+  color: #333;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 0;
+  cursor: pointer;
+}
+
+.text-link-btn:hover {
+  text-decoration: underline;
+}
+
+.data-format-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f9f9f9;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.data-format-line {
+  margin: 0;
+  font-size: 13px;
+  color: #333;
+}
+
+.data-format-label {
+  font-weight: 700;
+}
+
+.data-export-meta {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f9f9f9;
+  color: #444;
+  font-size: 13px;
+}
+
+.status-panel {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f7f7f7;
+  color: #444;
+  font-size: 13px;
+}
+
+.status-panel.status-success {
+  border-color: #c7e4cf;
+  background: #eef8f1;
+  color: #1e5e2f;
+}
+
+.status-panel.status-error {
+  border-color: #f0c9c9;
+  background: #fff1f1;
+  color: #8f2020;
+}
+
 .archive-toggle-btn {
   width: 100%;
   margin-top: 12px;
@@ -373,6 +542,42 @@ body {
 
 .account-adjust-row .btn {
   flex: 0 0 auto;
+}
+
+.account-transactions {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.account-transactions-list {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.account-transaction-line {
+  border-radius: 0;
+}
+
+.account-transaction-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.account-transaction-date {
+  color: #666;
+  font-size: 12px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.account-transactions-empty {
+  margin: 0;
 }
 
 #graphSummary {
@@ -634,6 +839,10 @@ body {
   font-weight: 600;
 }
 
+.transaction-modal-actions {
+  justify-content: flex-end;
+}
+
 .saved {
   margin-top: 10px;
   color: var(--muted);
@@ -680,6 +889,26 @@ body {
     align-items: flex-start;
   }
 
+  .data-card-header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .data-tab-pills {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .data-tab-btn {
+    flex: 1 1 auto;
+    text-align: center;
+  }
+
+  .data-inline-row {
+    justify-content: flex-start;
+  }
+
   .transaction-header-actions {
     width: 100%;
     justify-content: flex-start;
@@ -708,6 +937,14 @@ body {
 
   .transaction-line-btn {
     padding: 9px 10px;
+  }
+
+  .account-transaction-left {
+    gap: 6px;
+  }
+
+  .transaction-modal-actions .btn {
+    flex: 1 1 100%;
   }
 
   .modal-card {

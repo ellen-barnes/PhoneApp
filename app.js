@@ -1,6 +1,7 @@
 const ACCOUNTS_STORAGE_KEY = "accounts";
 const TRANSACTIONS_STORAGE_KEY = "transactions";
 const CATEGORY_STORAGE_KEY = "transaction-category-options";
+const EXPORT_META_STORAGE_KEY = "data-last-export-meta";
 const DEFAULT_CATEGORY_OPTIONS = {
   expense: [
     "Audits",
@@ -52,6 +53,10 @@ let graphShowAllHistory = true;
 let graphShowTrendLine = true;
 let graphPointTargets = [];
 let activeGraphPointTransactionId = "";
+let activeDataTab = "import";
+let showImportFormatDetails = false;
+let selectedImportFile = null;
+let lastExportMeta = null;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CATEGORY_BREAKDOWN_COLORS = [
   "#1f77b4",
@@ -108,6 +113,26 @@ function formatAxisMoney(value) {
     }).format(value);
   }
   return formatMoney(value);
+}
+
+function formatFileSize(bytes) {
+  const size = Number.parseFloat(bytes);
+  if (!Number.isFinite(size) || size <= 0) return "0 B";
+  if (size < 1024) return `${Math.round(size)} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function formatDateTimeForDisplay(value) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "Never";
+  return new Date(timestamp).toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }
 
 function normalizeHeader(value) {
@@ -182,6 +207,38 @@ function loadCategoryOptions() {
   } catch {
     categoryOptions = cloneDefaultCategoryOptions();
   }
+}
+
+function loadLastExportMeta() {
+  const saved = localStorage.getItem(EXPORT_META_STORAGE_KEY);
+  if (!saved) {
+    lastExportMeta = null;
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(saved);
+    if (!parsed || typeof parsed !== "object") {
+      lastExportMeta = null;
+      return;
+    }
+    lastExportMeta = {
+      date: toTrimmedString(parsed.date),
+      transactions: Number.parseInt(parsed.transactions, 10) || 0,
+      accounts: Number.parseInt(parsed.accounts, 10) || 0
+    };
+  } catch {
+    lastExportMeta = null;
+  }
+}
+
+function saveLastExportMeta() {
+  if (!lastExportMeta) {
+    localStorage.removeItem(EXPORT_META_STORAGE_KEY);
+    return;
+  }
+
+  localStorage.setItem(EXPORT_META_STORAGE_KEY, JSON.stringify(lastExportMeta));
 }
 
 function getCategoryListByType(type) {
@@ -654,6 +711,22 @@ function renderAccounts() {
     const accountBalance = getSafeAmount(balances[account.id] || 0);
     const canArchive = Math.abs(accountBalance) < 0.0001;
     const isExpanded = expandedAccountId === account.id;
+    const accountTransactions = getTransactionsForAccount(account.id);
+    const accountTransactionsMarkup = accountTransactions.length === 0
+      ? '<p class="saved account-transactions-empty">No transactions for this account yet.</p>'
+      : `
+        <div class="account-transactions-list">
+          ${accountTransactions.map((tx) => `
+            <button type="button" class="transaction-line-btn account-transaction-line" onclick="event.stopPropagation(); openTransactionModal('${tx.id}')">
+              <span class="account-transaction-left">
+                <span class="account-transaction-date">${escapeHtml(formatDateForDisplay(tx.date))}</span>
+                <span class="transaction-line-label">${escapeHtml(getTransactionCompactLabel(tx))}</span>
+              </span>
+              <span class="transaction-line-amount ${getAccountTransactionAmountClass(tx, account.id)}">${escapeHtml(getAccountTransactionAmountText(tx, account.id))}</span>
+            </button>
+          `).join("")}
+        </div>
+      `;
     const deleteButton = canArchive
       ? `<button class="btn btn-danger btn-small" onclick="event.stopPropagation(); deleteAccount('${account.id}')">Delete</button>`
       : "";
@@ -680,6 +753,9 @@ function renderAccounts() {
         <input id="amount-${account.id}" class="input amount-input" type="number" step="0.01" placeholder="Amount (+/-)" />
         <button class="btn btn-small" onclick="adjustAccount('${account.id}')">Adjust</button>
         <button class="btn btn-secondary btn-small" onclick="silentAdjust('${account.id}')">Silent Adjust</button>
+      </div>
+      <div class="account-transactions ${isExpanded ? "" : "hidden"}" onclick="event.stopPropagation()">
+        ${accountTransactionsMarkup}
       </div>
     `;
     list.appendChild(card);
@@ -978,6 +1054,33 @@ function getTransactionCompactAmountClass(tx) {
   return "transaction-line-transfer";
 }
 
+function getAccountTransactionAmountText(tx, accountId) {
+  if (tx.type === "transfer") {
+    if (tx.toAccountId === accountId) return `+ ${formatMoney(tx.amount)}`;
+    if (tx.fromAccountId === accountId) return `- ${formatMoney(tx.amount)}`;
+  }
+
+  return getTransactionCompactAmountText(tx);
+}
+
+function getAccountTransactionAmountClass(tx, accountId) {
+  if (tx.type === "transfer") {
+    if (tx.toAccountId === accountId) return "transaction-line-income";
+    if (tx.fromAccountId === accountId) return "transaction-line-expense";
+  }
+
+  return getTransactionCompactAmountClass(tx);
+}
+
+function getTransactionsForAccount(accountId) {
+  return sortTransactionsDescending().filter((tx) => {
+    if (tx.type === "transfer") {
+      return tx.fromAccountId === accountId || tx.toAccountId === accountId;
+    }
+    return tx.accountId === accountId;
+  });
+}
+
 function getTransactionNetImpact(tx) {
   if (tx.type === "income") return tx.amount;
   if (tx.type === "expense") return -tx.amount;
@@ -1002,14 +1105,118 @@ function closeTransactionModal() {
   activeTransactionModalId = "";
   const modal = document.getElementById("transactionModal");
   const modalBody = document.getElementById("transactionModalBody");
+  const deleteButton = document.getElementById("transactionModalDeleteBtn");
+  const saveButton = document.getElementById("transactionModalSaveBtn");
   if (modal) modal.classList.add("hidden");
   if (modalBody) modalBody.innerHTML = "";
+  if (deleteButton) deleteButton.disabled = true;
+  if (saveButton) saveButton.disabled = true;
 }
 
 function onTransactionModalBackdropClick(event) {
   if (event.target && event.target.id === "transactionModal") {
     closeTransactionModal();
   }
+}
+
+function populateTransactionEditAccountSelect(selectId, selectedValue = "") {
+  const select = document.getElementById(selectId);
+  if (!select) return;
+
+  const previousValue = toTrimmedString(selectedValue);
+  const sortedAccounts = [...accounts].sort((a, b) => {
+    if (a.archived !== b.archived) return a.archived ? 1 : -1;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  });
+
+  select.innerHTML = "";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Select account";
+  select.appendChild(placeholder);
+
+  sortedAccounts.forEach((account) => {
+    const option = document.createElement("option");
+    option.value = account.id;
+    option.textContent = account.archived ? `${account.name} (Archived)` : account.name;
+    select.appendChild(option);
+  });
+
+  const hasMatch = Array.from(select.options).some((option) => option.value === previousValue);
+  if (!hasMatch && previousValue) {
+    const fallback = document.createElement("option");
+    fallback.value = previousValue;
+    fallback.textContent = "Deleted account";
+    select.appendChild(fallback);
+  }
+
+  select.value = previousValue;
+}
+
+function populateTransactionEditCategorySelect(type, selectedValue = "") {
+  const categorySelect = document.getElementById("transactionEditCategoryInput");
+  if (!categorySelect) return;
+
+  if (type !== "expense" && type !== "income") {
+    categorySelect.innerHTML = "";
+    categorySelect.disabled = true;
+    return;
+  }
+
+  const list = getCategoryListByType(type);
+  const selected = normalizeCategoryName(selectedValue);
+  categorySelect.innerHTML = "";
+
+  const emptyOption = document.createElement("option");
+  emptyOption.value = "";
+  emptyOption.textContent = "Uncategorized";
+  categorySelect.appendChild(emptyOption);
+
+  list.forEach((category) => {
+    const option = document.createElement("option");
+    option.value = category;
+    option.textContent = category;
+    categorySelect.appendChild(option);
+  });
+
+  if (selected && !list.some((item) => item.toLowerCase() === selected.toLowerCase())) {
+    const customOption = document.createElement("option");
+    customOption.value = selected;
+    customOption.textContent = selected;
+    categorySelect.appendChild(customOption);
+  }
+
+  categorySelect.disabled = false;
+  categorySelect.value = selected;
+}
+
+function syncTransactionEditTypeUI(preferredCategory = "") {
+  const typeInput = document.getElementById("transactionEditTypeInput");
+  const accountGroup = document.getElementById("transactionEditAccountGroup");
+  const transferGroup = document.getElementById("transactionEditTransferGroup");
+  const categoryGroup = document.getElementById("transactionEditCategoryGroup");
+  const accountInput = document.getElementById("transactionEditAccountInput");
+  const fromInput = document.getElementById("transactionEditFromAccountInput");
+  const toInput = document.getElementById("transactionEditToAccountInput");
+  if (!typeInput || !accountGroup || !transferGroup || !categoryGroup) return;
+
+  const type = normalizeTransactionType(typeInput.value);
+  const isTransfer = type === "transfer";
+
+  accountGroup.classList.toggle("hidden", isTransfer);
+  transferGroup.classList.toggle("hidden", !isTransfer);
+  categoryGroup.classList.toggle("hidden", isTransfer);
+
+  if (accountInput) accountInput.disabled = isTransfer;
+  if (fromInput) fromInput.disabled = !isTransfer;
+  if (toInput) toInput.disabled = !isTransfer;
+
+  populateTransactionEditCategorySelect(type, preferredCategory);
+}
+
+function onTransactionEditTypeChange() {
+  syncTransactionEditTypeUI("");
 }
 
 function openTransactionModal(transactionId) {
@@ -1022,32 +1229,157 @@ function openTransactionModal(transactionId) {
   const modal = document.getElementById("transactionModal");
   const modalBody = document.getElementById("transactionModalBody");
   const deleteButton = document.getElementById("transactionModalDeleteBtn");
-  if (!modal || !modalBody || !deleteButton) return;
+  const saveButton = document.getElementById("transactionModalSaveBtn");
+  if (!modal || !modalBody || !deleteButton || !saveButton) return;
 
   activeTransactionModalId = tx.id;
   deleteButton.disabled = false;
+  saveButton.disabled = false;
 
-  const detailRows = [];
-  detailRows.push({ label: "Type", value: tx.type.toUpperCase() });
-  detailRows.push({ label: "Date", value: formatDateForDisplay(tx.date) });
-  detailRows.push({ label: "Amount", value: getTransactionCompactAmountText(tx) });
+  modalBody.innerHTML = `
+    <div class="stack">
+      <label class="label" for="transactionEditTypeInput">Type</label>
+      <select id="transactionEditTypeInput" class="input" onchange="onTransactionEditTypeChange()">
+        <option value="expense">Expense</option>
+        <option value="income">Income</option>
+        <option value="transfer">Transfer</option>
+      </select>
 
-  if (tx.type === "transfer") {
-    detailRows.push({ label: "From", value: getAccountNameById(tx.fromAccountId) });
-    detailRows.push({ label: "To", value: getAccountNameById(tx.toAccountId) });
-  } else {
-    detailRows.push({ label: "Account", value: getAccountNameById(tx.accountId) });
-    detailRows.push({ label: "Category", value: normalizeCategoryName(tx.category) || "Not set" });
-  }
+      <label class="label" for="transactionEditDateInput">Date</label>
+      <input id="transactionEditDateInput" class="input" type="date" />
 
-  detailRows.push({ label: "Currency", value: tx.currency ? tx.currency.toUpperCase() : "GBP" });
-  detailRows.push({ label: "Note", value: tx.note ? tx.note : "No note" });
+      <label class="label" for="transactionEditAmountInput">Amount</label>
+      <input id="transactionEditAmountInput" class="input" type="number" step="0.01" min="0.01" />
 
-  modalBody.innerHTML = detailRows
-    .map((row) => `<p class="transaction-modal-line"><span class="transaction-modal-label">${escapeHtml(row.label)}</span><span>${escapeHtml(row.value)}</span></p>`)
-    .join("");
+      <div id="transactionEditAccountGroup" class="stack">
+        <label class="label" for="transactionEditAccountInput">Account</label>
+        <select id="transactionEditAccountInput" class="input"></select>
+      </div>
+
+      <div id="transactionEditTransferGroup" class="stack hidden">
+        <label class="label" for="transactionEditFromAccountInput">From account</label>
+        <select id="transactionEditFromAccountInput" class="input"></select>
+        <label class="label" for="transactionEditToAccountInput">To account</label>
+        <select id="transactionEditToAccountInput" class="input"></select>
+      </div>
+
+      <div id="transactionEditCategoryGroup" class="stack">
+        <label class="label" for="transactionEditCategoryInput">Category</label>
+        <select id="transactionEditCategoryInput" class="input"></select>
+      </div>
+
+      <label class="label" for="transactionEditCurrencyInput">Currency</label>
+      <input id="transactionEditCurrencyInput" class="input" placeholder="GBP" />
+
+      <label class="label" for="transactionEditNoteInput">Note</label>
+      <input id="transactionEditNoteInput" class="input" placeholder="Optional note" />
+    </div>
+  `;
+
+  populateTransactionEditAccountSelect("transactionEditAccountInput", tx.accountId);
+  populateTransactionEditAccountSelect("transactionEditFromAccountInput", tx.fromAccountId);
+  populateTransactionEditAccountSelect("transactionEditToAccountInput", tx.toAccountId);
+
+  const typeInput = document.getElementById("transactionEditTypeInput");
+  const dateInput = document.getElementById("transactionEditDateInput");
+  const amountInput = document.getElementById("transactionEditAmountInput");
+  const noteInput = document.getElementById("transactionEditNoteInput");
+  const currencyInput = document.getElementById("transactionEditCurrencyInput");
+  const accountInput = document.getElementById("transactionEditAccountInput");
+  const fromInput = document.getElementById("transactionEditFromAccountInput");
+  const toInput = document.getElementById("transactionEditToAccountInput");
+
+  if (typeInput) typeInput.value = tx.type;
+  if (dateInput) dateInput.value = normalizeImportedDate(tx.date);
+  if (amountInput) amountInput.value = String(tx.amount);
+  if (noteInput) noteInput.value = tx.note || "";
+  if (currencyInput) currencyInput.value = (tx.currency || "GBP").toUpperCase();
+  if (accountInput) accountInput.value = tx.accountId || "";
+  if (fromInput) fromInput.value = tx.fromAccountId || "";
+  if (toInput) toInput.value = tx.toAccountId || "";
+  syncTransactionEditTypeUI(tx.category || "");
 
   modal.classList.remove("hidden");
+}
+
+function saveTransactionFromModal() {
+  if (!activeTransactionModalId) return;
+
+  const txIndex = transactions.findIndex((item) => item.id === activeTransactionModalId);
+  if (txIndex < 0) {
+    closeTransactionModal();
+    return;
+  }
+
+  const typeInput = document.getElementById("transactionEditTypeInput");
+  const dateInput = document.getElementById("transactionEditDateInput");
+  const amountInput = document.getElementById("transactionEditAmountInput");
+  const noteInput = document.getElementById("transactionEditNoteInput");
+  const currencyInput = document.getElementById("transactionEditCurrencyInput");
+  const accountInput = document.getElementById("transactionEditAccountInput");
+  const fromInput = document.getElementById("transactionEditFromAccountInput");
+  const toInput = document.getElementById("transactionEditToAccountInput");
+  const categoryInput = document.getElementById("transactionEditCategoryInput");
+  if (!typeInput || !dateInput || !amountInput || !noteInput || !currencyInput || !accountInput || !fromInput || !toInput || !categoryInput) {
+    return;
+  }
+
+  const type = normalizeTransactionType(typeInput.value);
+  const amount = getSafeAmount(amountInput.value);
+  if (!type) {
+    window.alert("Choose a transaction type.");
+    return;
+  }
+  if (amount <= 0) {
+    window.alert("Amount must be greater than 0.");
+    return;
+  }
+
+  const date = normalizeImportedDate(dateInput.value);
+  const note = toTrimmedString(noteInput.value);
+  const currency = toTrimmedString(currencyInput.value).toUpperCase() || "GBP";
+  const accountIds = new Set(accounts.map((account) => account.id));
+  const tx = transactions[txIndex];
+
+  if (type === "transfer") {
+    const fromAccountId = toTrimmedString(fromInput.value);
+    const toAccountId = toTrimmedString(toInput.value);
+    if (!accountIds.has(fromAccountId) || !accountIds.has(toAccountId) || fromAccountId === toAccountId) {
+      window.alert("Choose different valid from/to accounts.");
+      return;
+    }
+
+    tx.type = type;
+    tx.date = date;
+    tx.amount = amount;
+    tx.accountId = "";
+    tx.fromAccountId = fromAccountId;
+    tx.toAccountId = toAccountId;
+    tx.category = "";
+    tx.note = note;
+    tx.currency = currency;
+  } else {
+    const accountId = toTrimmedString(accountInput.value);
+    if (!accountIds.has(accountId)) {
+      window.alert("Choose a valid account.");
+      return;
+    }
+
+    const category = ensureCategoryOption(type, normalizeCategoryName(categoryInput.value), true);
+    tx.type = type;
+    tx.date = date;
+    tx.amount = amount;
+    tx.accountId = accountId;
+    tx.fromAccountId = "";
+    tx.toAccountId = "";
+    tx.category = category;
+    tx.note = note;
+    tx.currency = currency;
+  }
+
+  saveTransactions();
+  render();
+  closeTransactionModal();
 }
 
 function deleteTransactionFromModal() {
@@ -1916,6 +2248,7 @@ function render() {
   renderAccounts();
   renderTransactionForm();
   renderTransactions();
+  renderDataSection();
   renderGraphFilter();
   renderGraph();
   renderCategoryBreakdown();
@@ -2449,42 +2782,350 @@ function showImportFailuresPopup(failedRows) {
   );
 }
 
-async function importTransactionsFile() {
-  const fileInput = document.getElementById("importFileInput");
-  const result = document.getElementById("importResult");
-  const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+function setStatusPanelMessage(elementId, message, state = "info") {
+  const panel = document.getElementById(elementId);
+  if (!panel) return;
 
-  if (!file) {
-    result.innerText = "Choose a file first.";
+  const text = toTrimmedString(message);
+  if (!text) {
+    panel.innerText = "";
+    panel.className = "status-panel hidden";
     return;
   }
 
-  result.innerText = "Importing...";
+  panel.innerText = text;
+  panel.className = "status-panel";
+  if (state === "success") panel.classList.add("status-success");
+  if (state === "error") panel.classList.add("status-error");
+}
+
+function getCurrentImportFile() {
+  if (selectedImportFile) return selectedImportFile;
+  const input = document.getElementById("importFileInput");
+  return input && input.files && input.files[0] ? input.files[0] : null;
+}
+
+function updateImportFileSelectionState() {
+  const info = document.getElementById("importSelectedFileInfo");
+  const importButton = document.getElementById("importTransactionsBtn");
+  const file = getCurrentImportFile();
+
+  if (importButton) {
+    importButton.disabled = !file;
+  }
+
+  if (!info) return;
+  if (!file) {
+    info.innerText = "";
+    info.classList.add("hidden");
+    return;
+  }
+
+  info.innerText = `Selected: ${file.name} (${formatFileSize(file.size)})`;
+  info.classList.remove("hidden");
+}
+
+function triggerImportFilePicker() {
+  const input = document.getElementById("importFileInput");
+  if (input) input.click();
+}
+
+function onImportFileInputChange() {
+  const input = document.getElementById("importFileInput");
+  selectedImportFile = input && input.files && input.files[0] ? input.files[0] : null;
+  updateImportFileSelectionState();
+}
+
+function onImportDropzoneKeyDown(event) {
+  if (event.key !== "Enter" && event.key !== " " && event.key !== "Spacebar") return;
+  event.preventDefault();
+  triggerImportFilePicker();
+}
+
+function setImportDropzoneDragState(isDragOver) {
+  const dropzone = document.getElementById("importDropzone");
+  if (!dropzone) return;
+  dropzone.classList.toggle("drag-over", isDragOver);
+}
+
+function initImportDropzone() {
+  const dropzone = document.getElementById("importDropzone");
+  if (!dropzone) return;
+  if (dropzone.dataset.bound === "1") return;
+  dropzone.dataset.bound = "1";
+
+  const onDragActive = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setImportDropzoneDragState(true);
+  };
+
+  const onDragInactive = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setImportDropzoneDragState(false);
+  };
+
+  dropzone.addEventListener("dragenter", onDragActive);
+  dropzone.addEventListener("dragover", onDragActive);
+  dropzone.addEventListener("dragleave", onDragInactive);
+  dropzone.addEventListener("dragend", onDragInactive);
+  dropzone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setImportDropzoneDragState(false);
+
+    const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0]
+      ? event.dataTransfer.files[0]
+      : null;
+    if (!file) return;
+
+    selectedImportFile = file;
+    const input = document.getElementById("importFileInput");
+    if (input) {
+      try {
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        input.files = transfer.files;
+      } catch {
+        input.value = "";
+      }
+    }
+    updateImportFileSelectionState();
+  });
+}
+
+function renderImportFormatPanel() {
+  const panel = document.getElementById("importFormatPanel");
+  const toggleButton = document.getElementById("importFormatToggleBtn");
+  if (panel) {
+    panel.classList.toggle("hidden", !showImportFormatDetails);
+  }
+  if (toggleButton) {
+    toggleButton.innerText = showImportFormatDetails ? "Hide required format <-" : "View required format ->";
+    toggleButton.setAttribute("aria-expanded", showImportFormatDetails ? "true" : "false");
+  }
+}
+
+function toggleImportFormatPanel() {
+  showImportFormatDetails = !showImportFormatDetails;
+  renderImportFormatPanel();
+}
+
+function downloadImportTemplate() {
+  window.alert("Template download will be added in a future update.");
+}
+
+function switchDataTab(tabName) {
+  activeDataTab = tabName === "export" ? "export" : "import";
+
+  const importTab = document.getElementById("dataTabImport");
+  const exportTab = document.getElementById("dataTabExport");
+  const importPanel = document.getElementById("dataImportPanel");
+  const exportPanel = document.getElementById("dataExportPanel");
+  if (!importTab || !exportTab || !importPanel || !exportPanel) return;
+
+  const importActive = activeDataTab === "import";
+  importTab.classList.toggle("active", importActive);
+  exportTab.classList.toggle("active", !importActive);
+  importTab.setAttribute("aria-selected", importActive ? "true" : "false");
+  exportTab.setAttribute("aria-selected", importActive ? "false" : "true");
+  importTab.tabIndex = importActive ? 0 : -1;
+  exportTab.tabIndex = importActive ? -1 : 0;
+  importPanel.classList.toggle("hidden", !importActive);
+  exportPanel.classList.toggle("hidden", importActive);
+}
+
+function onDataTabKeyDown(event, currentTab) {
+  const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+  if (!keys.includes(event.key)) return;
+  event.preventDefault();
+
+  if (event.key === "Home") {
+    switchDataTab("import");
+    const importTab = document.getElementById("dataTabImport");
+    if (importTab) importTab.focus();
+    return;
+  }
+
+  if (event.key === "End") {
+    switchDataTab("export");
+    const exportTab = document.getElementById("dataTabExport");
+    if (exportTab) exportTab.focus();
+    return;
+  }
+
+  const isImport = currentTab === "import";
+  const nextTab = event.key === "ArrowRight"
+    ? (isImport ? "export" : "import")
+    : (isImport ? "export" : "import");
+  switchDataTab(nextTab);
+  const nextTabElement = document.getElementById(nextTab === "import" ? "dataTabImport" : "dataTabExport");
+  if (nextTabElement) nextTabElement.focus();
+}
+
+function renderDataExportMeta() {
+  const meta = document.getElementById("dataExportMeta");
+  if (!meta) return;
+
+  const dateText = lastExportMeta && lastExportMeta.date
+    ? formatDateTimeForDisplay(lastExportMeta.date)
+    : "Never";
+  const transactionCount = lastExportMeta && Number.isInteger(lastExportMeta.transactions)
+    ? lastExportMeta.transactions
+    : transactions.length;
+  const accountCount = lastExportMeta && Number.isInteger(lastExportMeta.accounts)
+    ? lastExportMeta.accounts
+    : accounts.length;
+
+  meta.innerText = `Last export: ${dateText} | ${transactionCount} transactions | ${accountCount} accounts`;
+}
+
+function renderDataSection() {
+  switchDataTab(activeDataTab);
+  renderImportFormatPanel();
+  updateImportFileSelectionState();
+  renderDataExportMeta();
+}
+
+async function importTransactionsFile() {
+  const fileInput = document.getElementById("importFileInput");
+  const file = getCurrentImportFile();
+
+  if (!file) {
+    setStatusPanelMessage("dataImportStatus", "Choose a file first.", "error");
+    return;
+  }
+
+  setStatusPanelMessage("dataImportStatus", "Importing...", "info");
 
   try {
     const importPayload = await readImportRows(file);
     const rows = Array.isArray(importPayload) ? importPayload : importPayload.rows;
     const rowNumberOffset = Number.isInteger(importPayload?.rowNumberOffset) ? importPayload.rowNumberOffset : 2;
     if (!rows || rows.length === 0) {
-      result.innerText = "No rows found in the file.";
+      setStatusPanelMessage("dataImportStatus", "No rows found in the file.", "error");
       return;
     }
 
     const counters = importTransactionsFromRows(rows, rowNumberOffset);
     persistAll();
     render();
-    fileInput.value = "";
+    selectedImportFile = null;
+    if (fileInput) fileInput.value = "";
+    updateImportFileSelectionState();
     showImportFailuresPopup(counters.failedRows);
 
     if (counters.added === 0) {
-      result.innerText = `No transactions imported. Skipped ${counters.skipped} row(s).`;
+      setStatusPanelMessage("dataImportStatus", `No transactions imported. Skipped ${counters.skipped} row(s).`, "error");
       return;
     }
 
-    result.innerText = `Imported ${counters.added} transaction(s), created ${counters.createdAccounts} account(s), skipped ${counters.skipped} row(s).`;
+    setStatusPanelMessage(
+      "dataImportStatus",
+      `Imported ${counters.added} transactions.`,
+      "success"
+    );
   } catch (error) {
-    result.innerText = `Import failed: ${error instanceof Error ? error.message : "Unknown error"}`;
+    setStatusPanelMessage("dataImportStatus", `Import failed: ${error instanceof Error ? error.message : "Unknown error"}`, "error");
   }
+}
+
+function buildAccountExportRows() {
+  const balances = getBalanceMap();
+  return [...accounts]
+    .sort((a, b) => {
+      const balanceA = getSafeAmount(balances[a.id] || 0);
+      const balanceB = getSafeAmount(balances[b.id] || 0);
+      if (balanceA !== balanceB) return balanceB - balanceA;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    })
+    .map((account) => ({
+      id: account.id,
+      account: account.name,
+      current_balance: getSafeAmount(balances[account.id] || 0),
+      opening_balance: getSafeAmount(account.initialBalance),
+      archived: account.archived ? "Yes" : "No",
+      created_date: account.createdDate
+    }));
+}
+
+function buildTransactionExportRows() {
+  return sortTransactionsAscending().map((tx) => {
+    const accountName = tx.type === "transfer" ? "" : getAccountNameById(tx.accountId);
+    const fromAccountName = tx.type === "transfer"
+      ? getAccountNameById(tx.fromAccountId)
+      : (tx.type === "expense" ? accountName : "");
+    const toAccountName = tx.type === "transfer"
+      ? getAccountNameById(tx.toAccountId)
+      : (tx.type === "income" ? accountName : "");
+
+    return {
+      id: tx.id,
+      type: tx.type,
+      amount: getSafeAmount(tx.amount),
+      account: accountName,
+      account_fr: fromAccountName,
+      account_to: toAccountName,
+      category: tx.type === "transfer" ? "" : normalizeCategoryName(tx.category),
+      remark: tx.note || "",
+      currency: (tx.currency || "GBP").toUpperCase(),
+      date: tx.date,
+      created_at: tx.createdAt || ""
+    };
+  });
+}
+
+function exportAllData() {
+  if (!window.XLSX) {
+    setStatusPanelMessage("dataExportStatus", "Excel export is unavailable right now. Check internet access and retry.", "error");
+    return;
+  }
+
+  const accountRows = buildAccountExportRows();
+  const transactionRows = buildTransactionExportRows();
+
+  const workbook = window.XLSX.utils.book_new();
+  const accountSheet = window.XLSX.utils.json_to_sheet(accountRows.length > 0 ? accountRows : [{
+    id: "",
+    account: "",
+    current_balance: 0,
+    opening_balance: 0,
+    archived: "",
+    created_date: ""
+  }]);
+  const transactionSheet = window.XLSX.utils.json_to_sheet(transactionRows.length > 0 ? transactionRows : [{
+    id: "",
+    type: "",
+    amount: 0,
+    account: "",
+    account_fr: "",
+    account_to: "",
+    category: "",
+    remark: "",
+    currency: "",
+    date: "",
+    created_at: ""
+  }]);
+
+  window.XLSX.utils.book_append_sheet(workbook, accountSheet, "Accounts");
+  window.XLSX.utils.book_append_sheet(workbook, transactionSheet, "Transactions");
+
+  const fileName = `account-tracker-export-${getTodayDateInputValue()}.xlsx`;
+  window.XLSX.writeFile(workbook, fileName);
+
+  lastExportMeta = {
+    date: new Date().toISOString(),
+    transactions: transactionRows.length,
+    accounts: accountRows.length
+  };
+  saveLastExportMeta();
+  renderDataExportMeta();
+  setStatusPanelMessage(
+    "dataExportStatus",
+    `Exported ${accountRows.length} account(s) and ${transactionRows.length} transaction(s) to ${fileName}.`,
+    "success"
+  );
 }
 
 function onGraphFilterChange() {
@@ -2532,10 +3173,7 @@ function clearAllTransactions() {
   saveTransactions();
   render();
 
-  const importResult = document.getElementById("importResult");
-  if (importResult) {
-    importResult.innerText = "All transaction history was cleared.";
-  }
+  setStatusPanelMessage("dataImportStatus", "All transaction history was cleared.", "info");
 }
 
 function showTab(tabName) {
@@ -2574,9 +3212,11 @@ window.onload = function () {
   loadAccounts();
   loadCategoryOptions();
   loadTransactions();
+  loadLastExportMeta();
   syncCategoriesFromTransactions();
   render();
   showTab("dashboard");
+  initImportDropzone();
 
   const graphCanvas = document.getElementById("balanceChart");
   if (graphCanvas) {
@@ -2609,4 +3249,5 @@ document.addEventListener("click", (event) => {
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("./service-worker.js");
 }
+
 
