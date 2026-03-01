@@ -4,6 +4,7 @@
   --text: #111;
   --muted: #555;
   --border: #e5e5e5;
+  --brandGreen: #59bd58;
   --btn: #000;
   --btnText: #fff;
   --danger: #9b1c1c;
@@ -34,6 +35,7 @@ body {
 
 .header h1 {
   margin: 0;
+  color: var(--brandGreen);
 }
 
 .subtitle {
