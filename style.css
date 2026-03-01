@@ -958,6 +958,21 @@ body {
   padding: 0 4px 10px;
 }
 
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.footer-status {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.footer-status.error {
+  color: #8f2020;
+}
+
 @media (max-width: 560px) {
   .tabs {
     grid-template-columns: 1fr;
@@ -1058,5 +1073,9 @@ body {
 
   .category-delete-btn {
     padding: 0 10px;
+  }
+
+  .footer-actions {
+    flex-wrap: wrap;
   }
 }

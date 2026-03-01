@@ -3496,21 +3496,90 @@ function mountSharedModalsToBody() {
   });
 }
 
-let promptedServiceWorkerScriptUrl = "";
+let promptedServiceWorkerRef = null;
 let serviceWorkerRegistrationRef = null;
 
 function promptForServiceWorkerUpdate(registration) {
   if (!registration || !registration.waiting) return;
 
   const waiting = registration.waiting;
-  const waitingKey = toTrimmedString(waiting.scriptURL || "waiting");
-  if (waitingKey && waitingKey === promptedServiceWorkerScriptUrl) return;
-  if (waitingKey) promptedServiceWorkerScriptUrl = waitingKey;
+  if (waiting === promptedServiceWorkerRef) return;
+  promptedServiceWorkerRef = waiting;
 
   const shouldUpdate = window.confirm("A new version of Ledger is available. Update now?");
   if (!shouldUpdate) return;
 
   waiting.postMessage({ type: "SKIP_WAITING" });
+}
+
+function setUpdateNowStatus(message = "", isError = false) {
+  const status = document.getElementById("updateNowStatus");
+  if (!status) return;
+  status.innerText = message;
+  status.classList.toggle("error", Boolean(isError));
+}
+
+function waitForWaitingServiceWorker(registration, timeoutMs = 7000) {
+  return new Promise((resolve) => {
+    if (!registration) {
+      resolve(false);
+      return;
+    }
+
+    if (registration.waiting) {
+      resolve(true);
+      return;
+    }
+
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      registration.removeEventListener("updatefound", onUpdateFound);
+      resolve(Boolean(value));
+    };
+
+    const watchInstalling = (installing) => {
+      if (!installing) return;
+      installing.addEventListener("statechange", () => {
+        if (installing.state === "installed") {
+          finish(Boolean(registration.waiting));
+        }
+      });
+    };
+
+    const onUpdateFound = () => {
+      watchInstalling(registration.installing);
+    };
+
+    registration.addEventListener("updatefound", onUpdateFound);
+    watchInstalling(registration.installing);
+
+    const timer = setTimeout(() => finish(Boolean(registration.waiting)), timeoutMs);
+  });
+}
+
+async function getServiceWorkerRegistration() {
+  if (!("serviceWorker" in navigator)) return null;
+
+  if (serviceWorkerRegistrationRef) return serviceWorkerRegistrationRef;
+
+  let registration = null;
+  try {
+    registration = await navigator.serviceWorker.getRegistration("./service-worker.js");
+  } catch {}
+
+  if (!registration) {
+    try {
+      registration = await navigator.serviceWorker.getRegistration();
+    } catch {}
+  }
+
+  if (registration) {
+    serviceWorkerRegistrationRef = registration;
+  }
+  return registration;
 }
 
 function registerServiceWorkerWithUpdatePrompt() {
@@ -3546,11 +3615,50 @@ function registerServiceWorkerWithUpdatePrompt() {
     .catch(() => {});
 }
 
-function checkForServiceWorkerUpdate() {
-  const registration = serviceWorkerRegistrationRef;
+async function checkForServiceWorkerUpdate() {
+  const registration = await getServiceWorkerRegistration();
   if (!registration) return;
   registration.update().catch(() => {});
   promptForServiceWorkerUpdate(registration);
+}
+
+async function onUpdateNowClick() {
+  if (!("serviceWorker" in navigator)) {
+    setUpdateNowStatus("Updates are not supported on this device.", true);
+    return;
+  }
+
+  const button = document.getElementById("updateNowBtn");
+  if (button) button.disabled = true;
+  setUpdateNowStatus("Checking for update...");
+
+  try {
+    const registration = await getServiceWorkerRegistration();
+    if (!registration) {
+      setUpdateNowStatus("Update service is not ready yet. Try again.");
+      return;
+    }
+
+    if (registration.waiting) {
+      setUpdateNowStatus("Applying update...");
+      registration.waiting.postMessage({ type: "SKIP_WAITING" });
+      return;
+    }
+
+    registration.update().catch(() => {});
+    const hasWaiting = await waitForWaitingServiceWorker(registration);
+    if (hasWaiting && registration.waiting) {
+      setUpdateNowStatus("Applying update...");
+      registration.waiting.postMessage({ type: "SKIP_WAITING" });
+      return;
+    }
+
+    setUpdateNowStatus("Already on latest version.");
+  } catch {
+    setUpdateNowStatus("Unable to check for updates right now.", true);
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 window.onload = function () {
