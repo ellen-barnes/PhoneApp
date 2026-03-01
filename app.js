@@ -3497,6 +3497,7 @@ function mountSharedModalsToBody() {
 }
 
 let promptedServiceWorkerScriptUrl = "";
+let serviceWorkerRegistrationRef = null;
 
 function promptForServiceWorkerUpdate(registration) {
   if (!registration || !registration.waiting) return;
@@ -3525,6 +3526,7 @@ function registerServiceWorkerWithUpdatePrompt() {
   navigator.serviceWorker.register("./service-worker.js")
     .then((registration) => {
       if (!registration) return;
+      serviceWorkerRegistrationRef = registration;
 
       promptForServiceWorkerUpdate(registration);
 
@@ -3542,6 +3544,13 @@ function registerServiceWorkerWithUpdatePrompt() {
       registration.update().catch(() => {});
     })
     .catch(() => {});
+}
+
+function checkForServiceWorkerUpdate() {
+  const registration = serviceWorkerRegistrationRef;
+  if (!registration) return;
+  registration.update().catch(() => {});
+  promptForServiceWorkerUpdate(registration);
 }
 
 window.onload = function () {
@@ -3585,6 +3594,19 @@ document.addEventListener("click", (event) => {
   if (!dropdown.contains(event.target)) {
     closeCategoryDropdown();
   }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  checkForServiceWorkerUpdate();
+});
+
+window.addEventListener("focus", () => {
+  checkForServiceWorkerUpdate();
+});
+
+window.addEventListener("pageshow", () => {
+  checkForServiceWorkerUpdate();
 });
 
 
