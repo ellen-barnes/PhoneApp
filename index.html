@@ -157,15 +157,41 @@
           <p id="dataImportStatus" class="status-panel hidden" role="status" aria-live="polite"></p>
         </div>
 
-        <div id="dataExportPanel" class="data-tab-panel hidden" role="tabpanel" aria-labelledby="dataTabExport">
-          <p class="saved data-subtitle">Export all accounts and transactions</p>
-          <p id="dataExportMeta" class="data-export-meta"></p>
-          <div class="row">
-            <button class="btn" type="button" onclick="exportAllData()">Export Data</button>
-          </div>
-          <p id="dataExportStatus" class="status-panel hidden" role="status" aria-live="polite"></p>
-        </div>
-      </div>
+	        <div id="dataExportPanel" class="data-tab-panel hidden" role="tabpanel" aria-labelledby="dataTabExport">
+	          <p class="saved data-subtitle">Export all accounts and transactions</p>
+	          <p id="dataExportMeta" class="data-export-meta"></p>
+	          <div class="row">
+	            <button class="btn" type="button" onclick="exportAllData()">Export Data</button>
+	          </div>
+	          <p id="dataExportStatus" class="status-panel hidden" role="status" aria-live="polite"></p>
+	        </div>
+
+	        <div class="cloud-sync-panel">
+	          <div class="section-title-row cloud-sync-header-row">
+	            <h3>Cloud Backup</h3>
+	          </div>
+	          <p class="saved data-subtitle">Private backup and restore with Supabase</p>
+	          <p id="cloudSyncUnavailable" class="saved hidden"></p>
+	          <div id="cloudSyncSignedOut" class="stack">
+	            <input id="cloudSyncEmailInput" class="input" type="email" placeholder="Email address" autocomplete="email" />
+	            <input id="cloudSyncPasswordInput" class="input" type="password" placeholder="Password" autocomplete="current-password" />
+	            <div class="row cloud-sync-actions">
+	              <button id="cloudSyncSignUpBtn" class="btn btn-secondary btn-small" type="button" onclick="signUpCloudSync()">Create Account</button>
+	              <button id="cloudSyncSignInBtn" class="btn btn-small" type="button" onclick="signInCloudSync()">Sign In</button>
+	            </div>
+	          </div>
+	          <div id="cloudSyncSignedIn" class="stack hidden">
+	            <p id="cloudSyncUserInfo" class="data-export-meta"></p>
+	            <p id="cloudSyncMeta" class="saved"></p>
+	            <div class="row cloud-sync-actions">
+	              <button id="cloudSyncNowBtn" class="btn btn-small" type="button" onclick="syncCloudNow()">Sync Now</button>
+	              <button id="cloudSyncRestoreBtn" class="btn btn-secondary btn-small" type="button" onclick="restoreCloudBackup()">Restore Cloud</button>
+	              <button id="cloudSyncSignOutBtn" class="btn btn-secondary btn-small" type="button" onclick="signOutCloudSync()">Sign Out</button>
+	            </div>
+	          </div>
+	          <p id="cloudSyncStatus" class="status-panel hidden" role="status" aria-live="polite"></p>
+	        </div>
+	      </div>
 
       <div id="transactionModal" class="modal hidden" onclick="onTransactionModalBackdropClick(event)">
         <div class="modal-card" onclick="event.stopPropagation()">
@@ -324,8 +350,10 @@
     </footer>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script src="app.js"></script>
-</body>
-</html>
+	  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+	  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+	  <script src="supabase-config.js"></script>
+	  <script src="app.js"></script>
+	</body>
+	</html>
 

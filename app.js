@@ -3,6 +3,12 @@ const TRANSACTIONS_STORAGE_KEY = "transactions";
 const CATEGORY_STORAGE_KEY = "transaction-category-options";
 const EXPORT_META_STORAGE_KEY = "data-last-export-meta";
 const TOTAL_EXCLUDED_ACCOUNTS_STORAGE_KEY = "total-excluded-account-ids";
+const CLOUD_SYNC_META_STORAGE_KEY = "cloud-sync-meta";
+const CLOUD_SYNC_TABLE_NAME = "ledger_snapshots";
+const CLOUD_SYNC_AUTO_DELAY_MS = 1200;
+const PERSISTENT_DB_NAME = "ledger-app-db";
+const PERSISTENT_DB_VERSION = 1;
+const PERSISTENT_STORE_NAME = "ledger-state";
 const DEFAULT_CATEGORY_OPTIONS = {
   expense: [
     "Audits",
@@ -38,6 +44,775 @@ const DEFAULT_CATEGORY_OPTIONS = {
 };
 const UNKNOWN_CATEGORY = "Unknown";
 const ACCOUNT_ADJUSTMENT_CATEGORY = "Account Adjustment";
+
+let persistentDbPromise = null;
+let persistentWriteQueue = Promise.resolve();
+let supabaseClient = null;
+let cloudSyncMeta = { lastLocalChangeAt: "", lastSyncedAt: "", lastRemoteUpdatedAt: "" };
+let cloudSyncSession = null;
+let cloudSyncSyncTimer = 0;
+let cloudSyncInFlight = false;
+let applyingCloudSnapshot = false;
+
+function getLocalStorageItem(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function setLocalStorageItem(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+}
+
+function removeLocalStorageItem(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {}
+}
+
+function openPersistentDatabase() {
+  if (typeof indexedDB === "undefined") {
+    return Promise.resolve(null);
+  }
+  if (persistentDbPromise) {
+    return persistentDbPromise;
+  }
+
+  persistentDbPromise = new Promise((resolve) => {
+    try {
+      const request = indexedDB.open(PERSISTENT_DB_NAME, PERSISTENT_DB_VERSION);
+
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains(PERSISTENT_STORE_NAME)) {
+          database.createObjectStore(PERSISTENT_STORE_NAME);
+        }
+      };
+
+      request.onsuccess = () => {
+        const database = request.result;
+        database.onclose = () => {
+          persistentDbPromise = null;
+        };
+        database.onversionchange = () => {
+          database.close();
+          persistentDbPromise = null;
+        };
+        resolve(database);
+      };
+
+      request.onerror = () => {
+        persistentDbPromise = null;
+        resolve(null);
+      };
+
+      request.onblocked = () => {
+        persistentDbPromise = null;
+        resolve(null);
+      };
+    } catch {
+      persistentDbPromise = null;
+      resolve(null);
+    }
+  });
+
+  return persistentDbPromise;
+}
+
+async function readPersistentValue(key) {
+  const database = await openPersistentDatabase();
+  if (!database) {
+    return null;
+  }
+
+  return new Promise((resolve) => {
+    try {
+      const transaction = database.transaction(PERSISTENT_STORE_NAME, "readonly");
+      const store = transaction.objectStore(PERSISTENT_STORE_NAME);
+      const request = store.get(key);
+      request.onsuccess = () => resolve(typeof request.result === "string" ? request.result : null);
+      request.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+function queuePersistentOperation(operation) {
+  persistentWriteQueue = persistentWriteQueue
+    .catch(() => {})
+    .then(async () => {
+      const database = await openPersistentDatabase();
+      if (!database) {
+        return;
+      }
+      await operation(database);
+    })
+    .catch(() => {});
+
+  return persistentWriteQueue;
+}
+
+function writePersistentValue(key, value) {
+  return queuePersistentOperation((database) => new Promise((resolve) => {
+    try {
+      const transaction = database.transaction(PERSISTENT_STORE_NAME, "readwrite");
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => resolve();
+      transaction.onabort = () => resolve();
+      transaction.objectStore(PERSISTENT_STORE_NAME).put(value, key);
+    } catch {
+      resolve();
+    }
+  }));
+}
+
+function deletePersistentValue(key) {
+  return queuePersistentOperation((database) => new Promise((resolve) => {
+    try {
+      const transaction = database.transaction(PERSISTENT_STORE_NAME, "readwrite");
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => resolve();
+      transaction.onabort = () => resolve();
+      transaction.objectStore(PERSISTENT_STORE_NAME).delete(key);
+    } catch {
+      resolve();
+    }
+  }));
+}
+
+async function getStoredValue(key) {
+  const localValue = getLocalStorageItem(key);
+  if (localValue !== null) {
+    writePersistentValue(key, localValue);
+    return localValue;
+  }
+
+  const persistentValue = await readPersistentValue(key);
+  if (persistentValue !== null) {
+    setLocalStorageItem(key, persistentValue);
+  }
+  return persistentValue;
+}
+
+function setStoredValue(key, value) {
+  setLocalStorageItem(key, value);
+  writePersistentValue(key, value);
+}
+
+function removeStoredValue(key) {
+  removeLocalStorageItem(key);
+  deletePersistentValue(key);
+}
+
+async function requestPersistentStorage() {
+  if (!navigator.storage || typeof navigator.storage.persist !== "function") {
+    return false;
+  }
+
+  try {
+    if (typeof navigator.storage.persisted === "function") {
+      const alreadyPersistent = await navigator.storage.persisted();
+      if (alreadyPersistent) {
+        return true;
+      }
+    }
+    return await navigator.storage.persist();
+  } catch {
+    return false;
+  }
+}
+
+function createDefaultCloudSyncMeta() {
+  return {
+    lastLocalChangeAt: "",
+    lastSyncedAt: "",
+    lastRemoteUpdatedAt: ""
+  };
+}
+
+function sanitizeCloudSyncMeta(raw) {
+  if (!raw || typeof raw !== "object") {
+    return createDefaultCloudSyncMeta();
+  }
+
+  return {
+    lastLocalChangeAt: toTrimmedString(raw.lastLocalChangeAt),
+    lastSyncedAt: toTrimmedString(raw.lastSyncedAt),
+    lastRemoteUpdatedAt: toTrimmedString(raw.lastRemoteUpdatedAt)
+  };
+}
+
+async function loadCloudSyncMeta() {
+  const saved = await getStoredValue(CLOUD_SYNC_META_STORAGE_KEY);
+  if (!saved) {
+    cloudSyncMeta = createDefaultCloudSyncMeta();
+    return;
+  }
+
+  try {
+    cloudSyncMeta = sanitizeCloudSyncMeta(JSON.parse(saved));
+  } catch {
+    cloudSyncMeta = createDefaultCloudSyncMeta();
+  }
+}
+
+function saveCloudSyncMeta() {
+  setStoredValue(CLOUD_SYNC_META_STORAGE_KEY, JSON.stringify(cloudSyncMeta));
+}
+
+function getCloudSyncConfig() {
+  const config = window.LEDGER_SUPABASE_CONFIG;
+  if (!config || typeof config !== "object") {
+    return { url: "", anonKey: "" };
+  }
+
+  return {
+    url: toTrimmedString(config.url),
+    anonKey: toTrimmedString(config.anonKey)
+  };
+}
+
+function isCloudSyncConfigured() {
+  const config = getCloudSyncConfig();
+  return Boolean(config.url && config.anonKey);
+}
+
+function ensureSupabaseClient() {
+  if (supabaseClient) {
+    return supabaseClient;
+  }
+  if (!window.supabase || typeof window.supabase.createClient !== "function") {
+    return null;
+  }
+
+  const config = getCloudSyncConfig();
+  if (!config.url || !config.anonKey) {
+    return null;
+  }
+
+  supabaseClient = window.supabase.createClient(config.url, config.anonKey, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+      storageKey: "ledger-supabase-auth"
+    }
+  });
+  return supabaseClient;
+}
+
+async function refreshCloudSyncSession() {
+  const client = ensureSupabaseClient();
+  if (!client) {
+    cloudSyncSession = null;
+    return null;
+  }
+
+  try {
+    const { data, error } = await client.auth.getSession();
+    cloudSyncSession = error ? null : (data?.session || null);
+  } catch {
+    cloudSyncSession = null;
+  }
+  return cloudSyncSession;
+}
+
+function formatSyncTimestamp(value, fallback = "Never") {
+  const clean = toTrimmedString(value);
+  if (!clean) return fallback;
+  return formatDateTimeForDisplay(clean);
+}
+
+function hasLocalLedgerData() {
+  const defaultCategories = cloneDefaultCategoryOptions();
+  const hasCustomCategories = JSON.stringify(sanitizeCategoryOptions(categoryOptions)) !== JSON.stringify(defaultCategories);
+  return accounts.length > 0
+    || transactions.length > 0
+    || totalExcludedAccountIds.length > 0
+    || hasCustomCategories
+    || Boolean(lastExportMeta);
+}
+
+function getCloudSyncPayload() {
+  return {
+    schemaVersion: 1,
+    savedAt: new Date().toISOString(),
+    accounts,
+    transactions,
+    categoryOptions,
+    totalExcludedAccountIds,
+    lastExportMeta
+  };
+}
+
+function sanitizeCloudSnapshot(raw) {
+  const snapshot = raw && typeof raw === "object" ? raw : {};
+  return {
+    accounts: Array.isArray(snapshot.accounts) ? snapshot.accounts : [],
+    transactions: Array.isArray(snapshot.transactions) ? snapshot.transactions : [],
+    categoryOptions: sanitizeCategoryOptions(snapshot.categoryOptions),
+    totalExcludedAccountIds: Array.isArray(snapshot.totalExcludedAccountIds) ? snapshot.totalExcludedAccountIds : [],
+    lastExportMeta: snapshot.lastExportMeta && typeof snapshot.lastExportMeta === "object"
+      ? snapshot.lastExportMeta
+      : null
+  };
+}
+
+function hasSnapshotData(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  const hasCustomCategories = JSON.stringify(sanitizeCategoryOptions(snapshot.categoryOptions)) !== JSON.stringify(cloneDefaultCategoryOptions());
+  return Array.isArray(snapshot.accounts) && snapshot.accounts.length > 0
+    || Array.isArray(snapshot.transactions) && snapshot.transactions.length > 0
+    || Array.isArray(snapshot.totalExcludedAccountIds) && snapshot.totalExcludedAccountIds.length > 0
+    || hasCustomCategories
+    || Boolean(snapshot.lastExportMeta);
+}
+
+function markCloudSyncComplete(remoteUpdatedAt = "") {
+  const timestamp = toTrimmedString(remoteUpdatedAt) || new Date().toISOString();
+  cloudSyncMeta.lastLocalChangeAt = timestamp;
+  cloudSyncMeta.lastSyncedAt = timestamp;
+  cloudSyncMeta.lastRemoteUpdatedAt = timestamp;
+  saveCloudSyncMeta();
+}
+
+function markLocalDataChanged() {
+  if (applyingCloudSnapshot) {
+    return;
+  }
+
+  cloudSyncMeta.lastLocalChangeAt = new Date().toISOString();
+  saveCloudSyncMeta();
+  scheduleCloudSync();
+}
+
+async function fetchCloudSnapshot() {
+  const client = ensureSupabaseClient();
+  const session = await refreshCloudSyncSession();
+  const userId = toTrimmedString(session?.user?.id);
+  if (!client || !userId) {
+    return null;
+  }
+
+  const { data, error } = await client
+    .from(CLOUD_SYNC_TABLE_NAME)
+    .select("payload, updated_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  return {
+    payload: sanitizeCloudSnapshot(data.payload),
+    updatedAt: toTrimmedString(data.updated_at)
+  };
+}
+
+async function applyCloudSnapshot(snapshot, remoteUpdatedAt = "") {
+  const nextSnapshot = sanitizeCloudSnapshot(snapshot);
+  applyingCloudSnapshot = true;
+
+  try {
+    setStoredValue(ACCOUNTS_STORAGE_KEY, JSON.stringify(nextSnapshot.accounts));
+    setStoredValue(TRANSACTIONS_STORAGE_KEY, JSON.stringify(nextSnapshot.transactions));
+    setStoredValue(CATEGORY_STORAGE_KEY, JSON.stringify(nextSnapshot.categoryOptions));
+    setStoredValue(TOTAL_EXCLUDED_ACCOUNTS_STORAGE_KEY, JSON.stringify(nextSnapshot.totalExcludedAccountIds));
+    if (nextSnapshot.lastExportMeta) {
+      setStoredValue(EXPORT_META_STORAGE_KEY, JSON.stringify(nextSnapshot.lastExportMeta));
+    } else {
+      removeStoredValue(EXPORT_META_STORAGE_KEY);
+    }
+
+    await loadAccounts();
+    await loadTotalExcludedAccountIds();
+    await loadCategoryOptions();
+    await loadTransactions();
+    await loadLastExportMeta();
+    syncCategoriesFromTransactions();
+    markCloudSyncComplete(remoteUpdatedAt);
+    render();
+  } finally {
+    applyingCloudSnapshot = false;
+  }
+}
+
+async function pushLocalSnapshotToCloud(successMessage = "Cloud backup updated.") {
+  const client = ensureSupabaseClient();
+  const session = await refreshCloudSyncSession();
+  const userId = toTrimmedString(session?.user?.id);
+  if (!client || !userId) {
+    setStatusPanelMessage("cloudSyncStatus", "Sign in to use cloud backup.", "error");
+    renderDataSection();
+    return false;
+  }
+
+  cloudSyncInFlight = true;
+  setStatusPanelMessage("cloudSyncStatus", "Syncing to Supabase...", "info");
+  renderDataSection();
+
+  try {
+    const fallbackUpdatedAt = new Date().toISOString();
+    const { data, error } = await client
+      .from(CLOUD_SYNC_TABLE_NAME)
+      .upsert({
+        user_id: userId,
+        payload: getCloudSyncPayload(),
+        updated_at: fallbackUpdatedAt
+      }, {
+        onConflict: "user_id"
+      })
+      .select("updated_at")
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    markCloudSyncComplete(toTrimmedString(data?.updated_at) || fallbackUpdatedAt);
+    setStatusPanelMessage("cloudSyncStatus", successMessage, "success");
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Cloud sync failed.";
+    setStatusPanelMessage("cloudSyncStatus", `Cloud sync failed: ${message}`, "error");
+    return false;
+  } finally {
+    cloudSyncInFlight = false;
+    renderDataSection();
+  }
+}
+
+function scheduleCloudSync() {
+  if (applyingCloudSnapshot) {
+    return;
+  }
+  if (!cloudSyncSession || !toTrimmedString(cloudSyncSession?.user?.id) || !isCloudSyncConfigured()) {
+    renderDataSection();
+    return;
+  }
+
+  if (cloudSyncSyncTimer) {
+    window.clearTimeout(cloudSyncSyncTimer);
+  }
+  cloudSyncSyncTimer = window.setTimeout(() => {
+    cloudSyncSyncTimer = 0;
+    void pushLocalSnapshotToCloud("Cloud backup updated.");
+  }, CLOUD_SYNC_AUTO_DELAY_MS);
+  renderDataSection();
+}
+
+async function reconcileCloudSnapshotOnSignIn() {
+  const session = await refreshCloudSyncSession();
+  const userId = toTrimmedString(session?.user?.id);
+  if (!userId) {
+    renderDataSection();
+    return;
+  }
+
+  setStatusPanelMessage("cloudSyncStatus", "Checking cloud backup...", "info");
+  renderDataSection();
+
+  try {
+    const remoteSnapshot = await fetchCloudSnapshot();
+    const localHasData = hasLocalLedgerData();
+    const localChangedSinceSync = Boolean(cloudSyncMeta.lastLocalChangeAt)
+      && (!cloudSyncMeta.lastSyncedAt || cloudSyncMeta.lastLocalChangeAt > cloudSyncMeta.lastSyncedAt);
+    const remoteIsNewerThanSeen = Boolean(remoteSnapshot?.updatedAt)
+      && (!cloudSyncMeta.lastRemoteUpdatedAt || remoteSnapshot.updatedAt > cloudSyncMeta.lastRemoteUpdatedAt);
+
+    if (!remoteSnapshot || !hasSnapshotData(remoteSnapshot.payload)) {
+      if (localHasData) {
+        await pushLocalSnapshotToCloud("Uploaded local data to Supabase.");
+      } else {
+        setStatusPanelMessage("cloudSyncStatus", "Signed in. No cloud backup found yet.", "info");
+        renderDataSection();
+      }
+      return;
+    }
+
+    if (!localHasData) {
+      await applyCloudSnapshot(remoteSnapshot.payload, remoteSnapshot.updatedAt);
+      setStatusPanelMessage("cloudSyncStatus", "Cloud backup restored to this device.", "success");
+      renderDataSection();
+      return;
+    }
+
+    if (!cloudSyncMeta.lastSyncedAt) {
+      cloudSyncMeta.lastRemoteUpdatedAt = remoteSnapshot.updatedAt || cloudSyncMeta.lastRemoteUpdatedAt;
+      saveCloudSyncMeta();
+      setStatusPanelMessage(
+        "cloudSyncStatus",
+        `Cloud backup found from ${formatSyncTimestamp(remoteSnapshot.updatedAt)}. Local data was kept. Use Restore Cloud if you want the backup instead.`,
+        "info"
+      );
+      renderDataSection();
+      return;
+    }
+
+    if (!localChangedSinceSync && remoteIsNewerThanSeen) {
+      await applyCloudSnapshot(remoteSnapshot.payload, remoteSnapshot.updatedAt);
+      setStatusPanelMessage("cloudSyncStatus", "Downloaded the latest cloud backup.", "success");
+      renderDataSection();
+      return;
+    }
+
+    if (localChangedSinceSync && !remoteIsNewerThanSeen) {
+      await pushLocalSnapshotToCloud("Uploaded local changes to Supabase.");
+      return;
+    }
+
+    if (!localChangedSinceSync && !remoteIsNewerThanSeen) {
+      markCloudSyncComplete(remoteSnapshot.updatedAt);
+      setStatusPanelMessage(
+        "cloudSyncStatus",
+        `Cloud backup connected. Last backup ${formatSyncTimestamp(remoteSnapshot.updatedAt)}.`,
+        "success"
+      );
+      renderDataSection();
+      return;
+    }
+
+    cloudSyncMeta.lastRemoteUpdatedAt = remoteSnapshot.updatedAt || cloudSyncMeta.lastRemoteUpdatedAt;
+    saveCloudSyncMeta();
+    setStatusPanelMessage(
+      "cloudSyncStatus",
+      "Cloud backup and this device both changed since the last sync. Use Sync Now to overwrite the cloud, or Restore Cloud to replace this device.",
+      "error"
+    );
+    renderDataSection();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Cloud backup check failed.";
+    setStatusPanelMessage("cloudSyncStatus", `Cloud backup check failed: ${message}`, "error");
+    renderDataSection();
+  }
+}
+
+function renderCloudSyncSection() {
+  const unavailable = document.getElementById("cloudSyncUnavailable");
+  const signedOut = document.getElementById("cloudSyncSignedOut");
+  const signedIn = document.getElementById("cloudSyncSignedIn");
+  const userInfo = document.getElementById("cloudSyncUserInfo");
+  const meta = document.getElementById("cloudSyncMeta");
+  const signUpButton = document.getElementById("cloudSyncSignUpBtn");
+  const signInButton = document.getElementById("cloudSyncSignInBtn");
+  const syncButton = document.getElementById("cloudSyncNowBtn");
+  const restoreButton = document.getElementById("cloudSyncRestoreBtn");
+  const signOutButton = document.getElementById("cloudSyncSignOutBtn");
+  if (!unavailable || !signedOut || !signedIn || !userInfo || !meta) {
+    return;
+  }
+
+  let unavailableMessage = "";
+  if (!window.supabase || typeof window.supabase.createClient !== "function") {
+    unavailableMessage = "Supabase failed to load. Local storage still works on this device.";
+  } else if (!isCloudSyncConfigured()) {
+    unavailableMessage = "Add your Supabase project URL and anon key in supabase-config.js to enable cloud backup.";
+  }
+
+  unavailable.innerText = unavailableMessage;
+  unavailable.classList.toggle("hidden", !unavailableMessage);
+
+  const hasSession = Boolean(cloudSyncSession && toTrimmedString(cloudSyncSession?.user?.id));
+  signedOut.classList.toggle("hidden", Boolean(unavailableMessage) || hasSession);
+  signedIn.classList.toggle("hidden", Boolean(unavailableMessage) || !hasSession);
+
+  if (hasSession) {
+    userInfo.innerText = `Signed in as ${toTrimmedString(cloudSyncSession?.user?.email) || "your account"}`;
+    meta.innerText = `Last sync: ${formatSyncTimestamp(cloudSyncMeta.lastSyncedAt)} | Cloud copy: ${formatSyncTimestamp(cloudSyncMeta.lastRemoteUpdatedAt)}`;
+  } else {
+    userInfo.innerText = "";
+    meta.innerText = "";
+  }
+
+  if (signUpButton) signUpButton.disabled = cloudSyncInFlight || Boolean(unavailableMessage);
+  if (signInButton) signInButton.disabled = cloudSyncInFlight || Boolean(unavailableMessage);
+  if (syncButton) syncButton.disabled = cloudSyncInFlight || !hasSession || Boolean(unavailableMessage);
+  if (restoreButton) restoreButton.disabled = cloudSyncInFlight || !hasSession || Boolean(unavailableMessage);
+  if (signOutButton) signOutButton.disabled = cloudSyncInFlight || !hasSession || Boolean(unavailableMessage);
+}
+
+async function initializeCloudSync() {
+  await loadCloudSyncMeta();
+  if (!ensureSupabaseClient()) {
+    cloudSyncSession = null;
+    return;
+  }
+
+  await refreshCloudSyncSession();
+  if (cloudSyncSession) {
+    await reconcileCloudSnapshotOnSignIn();
+  }
+}
+
+function getCloudSyncCredentials() {
+  const emailInput = document.getElementById("cloudSyncEmailInput");
+  const passwordInput = document.getElementById("cloudSyncPasswordInput");
+  return {
+    email: toTrimmedString(emailInput ? emailInput.value : ""),
+    password: String(passwordInput ? passwordInput.value : "")
+  };
+}
+
+function clearCloudSyncPasswordInput() {
+  const passwordInput = document.getElementById("cloudSyncPasswordInput");
+  if (passwordInput) {
+    passwordInput.value = "";
+  }
+}
+
+async function signUpCloudSync() {
+  const client = ensureSupabaseClient();
+  if (!client) {
+    setStatusPanelMessage("cloudSyncStatus", "Add your Supabase URL and anon key in supabase-config.js first.", "error");
+    renderDataSection();
+    return;
+  }
+
+  const credentials = getCloudSyncCredentials();
+  if (!credentials.email || credentials.password.length < 6) {
+    setStatusPanelMessage("cloudSyncStatus", "Enter an email and a password with at least 6 characters.", "error");
+    renderDataSection();
+    return;
+  }
+
+  cloudSyncInFlight = true;
+  setStatusPanelMessage("cloudSyncStatus", "Creating account...", "info");
+  renderDataSection();
+
+  try {
+    const { data, error } = await client.auth.signUp({
+      email: credentials.email,
+      password: credentials.password
+    });
+    if (error) {
+      throw error;
+    }
+
+    cloudSyncSession = data?.session || null;
+    clearCloudSyncPasswordInput();
+
+    if (cloudSyncSession) {
+      await reconcileCloudSnapshotOnSignIn();
+    } else {
+      setStatusPanelMessage("cloudSyncStatus", "Account created. Confirm the email if Supabase requires it, then sign in.", "success");
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Sign-up failed.";
+    setStatusPanelMessage("cloudSyncStatus", `Sign-up failed: ${message}`, "error");
+  } finally {
+    cloudSyncInFlight = false;
+    renderDataSection();
+  }
+}
+
+async function signInCloudSync() {
+  const client = ensureSupabaseClient();
+  if (!client) {
+    setStatusPanelMessage("cloudSyncStatus", "Add your Supabase URL and anon key in supabase-config.js first.", "error");
+    renderDataSection();
+    return;
+  }
+
+  const credentials = getCloudSyncCredentials();
+  if (!credentials.email || !credentials.password) {
+    setStatusPanelMessage("cloudSyncStatus", "Enter your Supabase email and password.", "error");
+    renderDataSection();
+    return;
+  }
+
+  cloudSyncInFlight = true;
+  setStatusPanelMessage("cloudSyncStatus", "Signing in...", "info");
+  renderDataSection();
+
+  try {
+    const { data, error } = await client.auth.signInWithPassword({
+      email: credentials.email,
+      password: credentials.password
+    });
+    if (error) {
+      throw error;
+    }
+
+    cloudSyncSession = data?.session || null;
+    clearCloudSyncPasswordInput();
+    await reconcileCloudSnapshotOnSignIn();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Sign-in failed.";
+    setStatusPanelMessage("cloudSyncStatus", `Sign-in failed: ${message}`, "error");
+  } finally {
+    cloudSyncInFlight = false;
+    renderDataSection();
+  }
+}
+
+async function signOutCloudSync() {
+  const client = ensureSupabaseClient();
+  if (!client) {
+    cloudSyncSession = null;
+    renderDataSection();
+    return;
+  }
+
+  cloudSyncInFlight = true;
+  renderDataSection();
+
+  try {
+    await client.auth.signOut();
+    cloudSyncSession = null;
+    if (cloudSyncSyncTimer) {
+      window.clearTimeout(cloudSyncSyncTimer);
+      cloudSyncSyncTimer = 0;
+    }
+    setStatusPanelMessage("cloudSyncStatus", "Signed out. Local data stays on this device.", "info");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Sign-out failed.";
+    setStatusPanelMessage("cloudSyncStatus", `Sign-out failed: ${message}`, "error");
+  } finally {
+    cloudSyncInFlight = false;
+    renderDataSection();
+  }
+}
+
+async function syncCloudNow() {
+  await pushLocalSnapshotToCloud("Cloud backup updated.");
+}
+
+async function restoreCloudBackup() {
+  if (hasLocalLedgerData() && !window.confirm("Replace this device's current local data with the cloud backup?")) {
+    return;
+  }
+
+  cloudSyncInFlight = true;
+  setStatusPanelMessage("cloudSyncStatus", "Restoring cloud backup...", "info");
+  renderDataSection();
+
+  try {
+    const remoteSnapshot = await fetchCloudSnapshot();
+    if (!remoteSnapshot || !hasSnapshotData(remoteSnapshot.payload)) {
+      setStatusPanelMessage("cloudSyncStatus", "No cloud backup found for this account yet.", "info");
+      return;
+    }
+
+    await applyCloudSnapshot(remoteSnapshot.payload, remoteSnapshot.updatedAt);
+    setStatusPanelMessage("cloudSyncStatus", "Cloud backup restored to this device.", "success");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Restore failed.";
+    setStatusPanelMessage("cloudSyncStatus", `Restore failed: ${message}`, "error");
+  } finally {
+    cloudSyncInFlight = false;
+    renderDataSection();
+  }
+}
 
 let accounts = [];
 let transactions = [];
@@ -210,11 +985,12 @@ function sanitizeCategoryOptions(raw) {
 }
 
 function saveCategoryOptions() {
-  localStorage.setItem(CATEGORY_STORAGE_KEY, JSON.stringify(categoryOptions));
+  setStoredValue(CATEGORY_STORAGE_KEY, JSON.stringify(categoryOptions));
+  markLocalDataChanged();
 }
 
-function loadCategoryOptions() {
-  const saved = localStorage.getItem(CATEGORY_STORAGE_KEY);
+async function loadCategoryOptions() {
+  const saved = await getStoredValue(CATEGORY_STORAGE_KEY);
   if (!saved) {
     categoryOptions = cloneDefaultCategoryOptions();
     return;
@@ -228,8 +1004,8 @@ function loadCategoryOptions() {
   }
 }
 
-function loadLastExportMeta() {
-  const saved = localStorage.getItem(EXPORT_META_STORAGE_KEY);
+async function loadLastExportMeta() {
+  const saved = await getStoredValue(EXPORT_META_STORAGE_KEY);
   if (!saved) {
     lastExportMeta = null;
     return;
@@ -253,15 +1029,17 @@ function loadLastExportMeta() {
 
 function saveLastExportMeta() {
   if (!lastExportMeta) {
-    localStorage.removeItem(EXPORT_META_STORAGE_KEY);
+    removeStoredValue(EXPORT_META_STORAGE_KEY);
+    markLocalDataChanged();
     return;
   }
 
-  localStorage.setItem(EXPORT_META_STORAGE_KEY, JSON.stringify(lastExportMeta));
+  setStoredValue(EXPORT_META_STORAGE_KEY, JSON.stringify(lastExportMeta));
+  markLocalDataChanged();
 }
 
-function loadTotalExcludedAccountIds() {
-  const saved = localStorage.getItem(TOTAL_EXCLUDED_ACCOUNTS_STORAGE_KEY);
+async function loadTotalExcludedAccountIds() {
+  const saved = await getStoredValue(TOTAL_EXCLUDED_ACCOUNTS_STORAGE_KEY);
   if (!saved) {
     totalExcludedAccountIds = [];
     return;
@@ -278,7 +1056,8 @@ function loadTotalExcludedAccountIds() {
 }
 
 function saveTotalExcludedAccountIds() {
-  localStorage.setItem(TOTAL_EXCLUDED_ACCOUNTS_STORAGE_KEY, JSON.stringify(totalExcludedAccountIds));
+  setStoredValue(TOTAL_EXCLUDED_ACCOUNTS_STORAGE_KEY, JSON.stringify(totalExcludedAccountIds));
+  markLocalDataChanged();
 }
 
 function sanitizeTotalExcludedAccountIds(rawIds) {
@@ -469,11 +1248,13 @@ function generateId() {
 }
 
 function saveAccounts() {
-  localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(accounts));
+  setStoredValue(ACCOUNTS_STORAGE_KEY, JSON.stringify(accounts));
+  markLocalDataChanged();
 }
 
 function saveTransactions() {
-  localStorage.setItem(TRANSACTIONS_STORAGE_KEY, JSON.stringify(transactions));
+  setStoredValue(TRANSACTIONS_STORAGE_KEY, JSON.stringify(transactions));
+  markLocalDataChanged();
 }
 
 function persistAll() {
@@ -483,8 +1264,8 @@ function persistAll() {
   saveTotalExcludedAccountIds();
 }
 
-function loadAccounts() {
-  const saved = localStorage.getItem(ACCOUNTS_STORAGE_KEY);
+async function loadAccounts() {
+  const saved = await getStoredValue(ACCOUNTS_STORAGE_KEY);
   if (!saved) {
     accounts = [];
     return;
@@ -518,8 +1299,8 @@ function getArchivedAccounts() {
   return accounts.filter((account) => account.archived);
 }
 
-function loadTransactions() {
-  const saved = localStorage.getItem(TRANSACTIONS_STORAGE_KEY);
+async function loadTransactions() {
+  const saved = await getStoredValue(TRANSACTIONS_STORAGE_KEY);
   if (!saved) {
     transactions = [];
     return;
@@ -3933,6 +4714,7 @@ function renderDataSection() {
   renderImportFormatPanel();
   updateImportFileSelectionState();
   renderDataExportMeta();
+  renderCloudSyncSection();
 }
 
 async function importTransactionsFile() {
@@ -4438,15 +5220,17 @@ async function onUpdateNowClick() {
   }
 }
 
-window.onload = function () {
+window.onload = async function () {
   mountSharedModalsToBody();
   registerServiceWorkerWithUpdatePrompt();
-  loadAccounts();
-  loadTotalExcludedAccountIds();
-  loadCategoryOptions();
-  loadTransactions();
-  loadLastExportMeta();
+  await requestPersistentStorage();
+  await loadAccounts();
+  await loadTotalExcludedAccountIds();
+  await loadCategoryOptions();
+  await loadTransactions();
+  await loadLastExportMeta();
   syncCategoriesFromTransactions();
+  await initializeCloudSync();
   render();
   showTab("dashboard");
   initImportDropzone();

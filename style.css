@@ -312,6 +312,27 @@ body {
   font-size: 13px;
 }
 
+.cloud-sync-panel {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 10px;
+}
+
+.cloud-sync-header-row {
+  margin-bottom: 0;
+}
+
+.cloud-sync-header-row h3 {
+  margin: 0;
+}
+
+.cloud-sync-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .status-panel {
   margin: 0;
   padding: 8px 10px;
